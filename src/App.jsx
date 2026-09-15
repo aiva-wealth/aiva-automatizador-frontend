@@ -120,9 +120,16 @@ export default function App() {
   const [resultado, setResultado] = useState(null);
   const [error, setError] = useState("");
 
-  const [vista, setVista] = useState("nueva"); // "nueva" | "registro"
+  const [vista, setVista] = useState("nueva"); // "nueva" | "registro" | "biblioteca"
   const [registro, setRegistro] = useState([]);
   const [registroCargando, setRegistroCargando] = useState(false);
+
+  const [bibliotecaQuery, setBibliotecaQuery] = useState("");
+  const [bibliotecaResultados, setBibliotecaResultados] = useState([]);
+  const [bibliotecaSel, setBibliotecaSel] = useState(null);
+  const [bibliotecaLogoFile, setBibliotecaLogoFile] = useState(null);
+  const [bibliotecaGuardando, setBibliotecaGuardando] = useState(false);
+  const [bibliotecaMensaje, setBibliotecaMensaje] = useState("");
 
   async function cargarRegistro() {
     setRegistroCargando(true);
@@ -143,6 +150,53 @@ export default function App() {
   useEffect(() => {
     if (vista === "registro") cargarRegistro();
   }, [vista]);
+
+  // --- Biblioteca de fondos ---
+  useEffect(() => {
+    if (vista !== "biblioteca" || bibliotecaQuery.trim().length < 2) { setBibliotecaResultados([]); return; }
+    const t = setTimeout(async () => {
+      const { data } = await supabase
+        .from("fondos")
+        .select("isin, nombre, sector, categoria, uso_frecuente, descripcion, factsheet_url, logo_url")
+        .or(`isin.ilike.%${bibliotecaQuery}%,nombre.ilike.%${bibliotecaQuery}%`)
+        .limit(15);
+      setBibliotecaResultados(data || []);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [bibliotecaQuery, vista]);
+
+  function seleccionarFondoBiblioteca(f) {
+    setBibliotecaSel({ ...f });
+    setBibliotecaLogoFile(null);
+    setBibliotecaMensaje("");
+  }
+
+  async function guardarFondoBiblioteca() {
+    setBibliotecaGuardando(true);
+    setBibliotecaMensaje("");
+    try {
+      let logo_url = bibliotecaSel.logo_url;
+      if (bibliotecaLogoFile) {
+        const ext = bibliotecaLogoFile.name.split(".").pop();
+        const path = `${bibliotecaSel.isin}.${ext}`;
+        const { error: uploadError } = await supabase.storage.from("logos-fondos").upload(path, bibliotecaLogoFile, { upsert: true });
+        if (uploadError) throw uploadError;
+        const { data } = supabase.storage.from("logos-fondos").getPublicUrl(path);
+        logo_url = data.publicUrl;
+      }
+      await supabase.from("fondos").update({
+        descripcion: bibliotecaSel.descripcion || null,
+        factsheet_url: bibliotecaSel.factsheet_url || null,
+        logo_url,
+      }).eq("isin", bibliotecaSel.isin);
+      setBibliotecaSel((prev) => ({ ...prev, logo_url }));
+      setBibliotecaMensaje("✓ Guardado — queda así para todas las próximas propuestas.");
+    } catch (e) {
+      setBibliotecaMensaje("Error al guardar: " + (e.message || e));
+    } finally {
+      setBibliotecaGuardando(false);
+    }
+  }
 
   const currentSteps = tipo === "Revision" ? STEPS_REVISION : STEPS_PROPUESTA;
   const stepName = currentSteps[step];
@@ -167,7 +221,7 @@ export default function App() {
     const t = setTimeout(async () => {
       const { data } = await supabase
         .from("fondos")
-        .select("isin, nombre, sector, categoria, ter, uso_frecuente")
+        .select("isin, nombre, sector, categoria, ter, uso_frecuente, descripcion, factsheet_url, logo_url")
         .or(`isin.ilike.%${fondoQuery}%,nombre.ilike.%${fondoQuery}%`)
         .order("uso_frecuente", { ascending: false })
         .limit(8);
@@ -298,9 +352,9 @@ export default function App() {
     };
 
     const fondosPorCategoria = {
-      "Renta Fija & Multi Activo": proposedAssets.filter((a) => a.categoria === "Renta Fija" || a.categoria === "Multi Activo").map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "" })),
-      "Renta Variable": proposedAssets.filter((a) => a.categoria === "Renta Variable").map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "" })),
-      "Alternativos Líquidos": proposedAssets.filter((a) => a.categoria === "Alternativos Líquidos").map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "" })),
+      "Renta Fija & Multi Activo": proposedAssets.filter((a) => a.categoria === "Renta Fija" || a.categoria === "Multi Activo").map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "", logo_url: a.logo_url || "" })),
+      "Renta Variable": proposedAssets.filter((a) => a.categoria === "Renta Variable").map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "", logo_url: a.logo_url || "" })),
+      "Alternativos Líquidos": proposedAssets.filter((a) => a.categoria === "Alternativos Líquidos").map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "", logo_url: a.logo_url || "" })),
     };
 
     const totalRevision = currentAssets.reduce((s, a) => s + (Number(a.valor_actual) || 0), 0) + Number(cashValorRevision || 0);
@@ -319,7 +373,7 @@ export default function App() {
     return {
       cliente, nro_cuenta: nroCuenta,
       incluir_pagina2: incluirPagina2, incluir_valor: incluirValueProp,
-      equipo: team.filter((m) => m.incluido).slice(0, tipo === "Propuesta" ? 4 : 5).map((m) => ({ nombre: m.nombre, puesto: m.puesto, educacion: m.educacion })),
+      equipo: team.filter((m) => m.incluido).slice(0, 5).map((m) => ({ nombre: m.nombre, puesto: m.puesto, educacion: m.educacion })),
       perfil_riesgo: perfil,
       portafolio_actual: tipo === "Revision"
         ? revisionAssets.map((a) => ({ isin: a.isin, nombre: a.nombre, pct: a.pct, costo: a.costo, valor_actual: a.valor_actual, rendimiento: a.rendimiento }))
@@ -414,11 +468,51 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
           <button onClick={() => setVista("nueva")} style={{ background: "none", border: "none", color: vista === "nueva" ? "#fff" : "#9fb0c9", fontWeight: vista === "nueva" ? 600 : 400, cursor: "pointer", fontSize: 13 }}>Nueva propuesta</button>
           <button onClick={() => setVista("registro")} style={{ background: "none", border: "none", color: vista === "registro" ? "#fff" : "#9fb0c9", fontWeight: vista === "registro" ? 600 : 400, cursor: "pointer", fontSize: 13 }}>Registro</button>
+          <button onClick={() => setVista("biblioteca")} style={{ background: "none", border: "none", color: vista === "biblioteca" ? "#fff" : "#9fb0c9", fontWeight: vista === "biblioteca" ? 600 : 400, cursor: "pointer", fontSize: 13 }}>Biblioteca de fondos</button>
           <span style={{ fontSize: 12.5, opacity: 0.85 }}>{usuario} · {repcode} — {asesorSel.nombre}</span>
         </div>
       </div>
 
-      {vista === "registro" ? (
+      {vista === "biblioteca" ? (
+        <div style={{ padding: "28px 36px", display: "flex", gap: 24 }}>
+          <div style={{ width: 360 }}>
+            <h3 style={{ color: NAVY, fontSize: 16, marginBottom: 8 }}>Biblioteca de fondos</h3>
+            <p style={{ fontSize: 12.5, color: "#78776f", marginBottom: 14 }}>Buscá un fondo para cargarle logo, descripción y factsheet — queda guardado para todas las próximas propuestas, no hay que repetirlo.</p>
+            <input style={inputStyle} value={bibliotecaQuery} onChange={(e) => setBibliotecaQuery(e.target.value)} placeholder="Buscar por ISIN o nombre" />
+            <div style={{ marginTop: 10, maxHeight: 480, overflowY: "auto" }}>
+              {bibliotecaResultados.map((f) => (
+                <div key={f.isin} onClick={() => seleccionarFondoBiblioteca(f)} style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #eae7dc", background: bibliotecaSel?.isin === f.isin ? "#fff" : "transparent" }}>
+                  <b>{f.isin}</b> — {f.nombre} {f.logo_url && <span style={{ color: TEAL }}>✓ logo</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {bibliotecaSel && (
+            <div style={{ flex: 1, maxWidth: 480, background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 20 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{bibliotecaSel.nombre}</div>
+              <div style={{ fontSize: 12, color: "#78776f", marginBottom: 16 }}>{bibliotecaSel.isin}</div>
+
+              {bibliotecaSel.logo_url && (
+                <img src={bibliotecaSel.logo_url} alt="logo" style={{ maxHeight: 60, marginBottom: 12, display: "block" }} />
+              )}
+              <Field label="Logo (imagen)">
+                <input type="file" accept="image/*" onChange={(e) => setBibliotecaLogoFile(e.target.files[0])} style={{ ...inputStyle, padding: "8px" }} />
+              </Field>
+              <Field label="Descripción">
+                <textarea value={bibliotecaSel.descripcion || ""} onChange={(e) => setBibliotecaSel((prev) => ({ ...prev, descripcion: e.target.value }))} rows={4} style={{ ...inputStyle, resize: "vertical" }} />
+              </Field>
+              <Field label="Link al factsheet">
+                <input style={inputStyle} value={bibliotecaSel.factsheet_url || ""} onChange={(e) => setBibliotecaSel((prev) => ({ ...prev, factsheet_url: e.target.value }))} placeholder="https://..." />
+              </Field>
+              <button onClick={guardarFondoBiblioteca} disabled={bibliotecaGuardando} style={{ padding: "9px 18px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontWeight: 600, cursor: "pointer" }}>
+                {bibliotecaGuardando ? "Guardando…" : "Guardar"}
+              </button>
+              {bibliotecaMensaje && <div style={{ marginTop: 10, fontSize: 12.5, color: bibliotecaMensaje.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{bibliotecaMensaje}</div>}
+            </div>
+          )}
+        </div>
+      ) : vista === "registro" ? (
         <div style={{ padding: "28px 36px" }}>
           <h3 style={{ color: NAVY, fontSize: 16, marginBottom: 16 }}>Registro de propuestas</h3>
           {registroCargando && <div style={{ fontSize: 13, color: "#78776f" }}>Cargando…</div>}
@@ -500,7 +594,7 @@ export default function App() {
           )}
 
           {stepName === "Equipo" && (
-            <Section title="Equipo" subtitle={tipo === "Propuesta" ? "El template de Propuesta tiene 4 lugares armados para el equipo." : "El template de Revisión tiene 5 lugares armados para el equipo."}>
+            <Section title="Equipo" subtitle="El template tiene 5 lugares armados para el equipo.">
               {team.map((m) => (
                 <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0" }}>
                   <input type="checkbox" checked={m.incluido} onChange={() => setTeam((prev) => prev.map((x) => x.id === m.id ? { ...x, incluido: !x.incluido } : x))} />
