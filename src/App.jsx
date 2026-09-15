@@ -230,7 +230,7 @@ export default function App() {
       conMatch.push({
         ...entry,
         candidatos,
-        isin_elegido: candidatos.length === 1 ? candidatos[0].isin : "",
+        isins_elegidos: candidatos.length === 1 ? [candidatos[0].isin] : [],
         omitir: candidatos.length === 0,
       });
     }
@@ -252,27 +252,38 @@ export default function App() {
     setImportAplicando(true);
     let aplicados = 0, saltados = 0, errores = 0;
     for (const entry of importEntradas) {
-      if (entry.omitir || !entry.isin_elegido) { saltados++; continue; }
+      if (entry.omitir || !entry.isins_elegidos || entry.isins_elegidos.length === 0) { saltados++; continue; }
+      // el mismo logo/descripción/factsheet puede aplicar a varios fondos
+      // de una misma familia (ej: una descripción genérica de "Money
+      // Market" que cubre a todos los fondos de esa categoría)
+      let logo_url = undefined;
       try {
-        let logo_url = undefined;
         const nombreArchivo = entry.logo_file ? entry.logo_file.split("/").pop() : null;
         const archivo = nombreArchivo ? importLogos[nombreArchivo] : null;
         if (archivo) {
           const ext = archivo.name.split(".").pop();
-          const path = `${entry.isin_elegido}.${ext}`;
+          // se sube una sola vez y se reutiliza el mismo link para todos los ISIN de este grupo
+          const path = `${entry.isins_elegidos[0]}.${ext}`;
           await supabase.storage.from("logos-fondos").upload(path, archivo, { upsert: true });
           const { data } = supabase.storage.from("logos-fondos").getPublicUrl(path);
           logo_url = data.publicUrl;
         }
-        const update = { descripcion: entry.descripcion || null, factsheet_url: entry.factsheet_url || null };
-        if (logo_url) update.logo_url = logo_url;
-        await supabase.from("fondos").update(update).eq("isin", entry.isin_elegido);
-        aplicados++;
       } catch (e) {
         errores++;
+        continue;
+      }
+      for (const isin of entry.isins_elegidos) {
+        try {
+          const update = { descripcion: entry.descripcion || null, factsheet_url: entry.factsheet_url || null };
+          if (logo_url) update.logo_url = logo_url;
+          await supabase.from("fondos").update(update).eq("isin", isin);
+          aplicados++;
+        } catch (e) {
+          errores++;
+        }
       }
     }
-    setImportResumen(`${aplicados} fondos actualizados, ${saltados} omitidos, ${errores} con error.`);
+    setImportResumen(`${aplicados} fondos actualizados, ${saltados} grupos omitidos, ${errores} con error.`);
     setImportAplicando(false);
   }
 
@@ -609,10 +620,23 @@ export default function App() {
                         <div style={{ fontSize: 13 }}>{entry.nombre}</div>
                         <div style={{ fontSize: 11, color: "#a5a399" }}>{entry.categoria_pptx} {entry.isin_detectado ? `· ISIN: ${entry.isin_detectado}` : ""}{entry.logo_file ? " · con logo" : " · sin logo"}</div>
                       </div>
-                      <select style={miniInputStyle} value={entry.isin_elegido} onChange={(e) => actualizarImportEntrada(i, "isin_elegido", e.target.value)}>
-                        <option value="">— sin match —</option>
-                        {entry.candidatos.map((c) => <option key={c.isin} value={c.isin}>{c.isin} — {c.nombre}</option>)}
-                      </select>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 90, overflowY: "auto" }}>
+                        {entry.candidatos.length === 0 && <div style={{ fontSize: 11.5, color: "#a5a399" }}>Sin coincidencias en la biblioteca</div>}
+                        {entry.candidatos.map((c) => (
+                          <label key={c.isin} style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 5 }}>
+                            <input
+                              type="checkbox"
+                              checked={entry.isins_elegidos?.includes(c.isin) || false}
+                              onChange={(e) => {
+                                const actuales = entry.isins_elegidos || [];
+                                const nuevos = e.target.checked ? [...actuales, c.isin] : actuales.filter((x) => x !== c.isin);
+                                actualizarImportEntrada(i, "isins_elegidos", nuevos);
+                              }}
+                            />
+                            {c.isin} — {c.nombre}
+                          </label>
+                        ))}
+                      </div>
                       <label style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 4 }}>
                         <input type="checkbox" checked={entry.omitir} onChange={(e) => actualizarImportEntrada(i, "omitir", e.target.checked)} /> Omitir
                       </label>
