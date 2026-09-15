@@ -20,15 +20,11 @@ const RISK_TEXT = {
     "El inversor presenta una alta tolerancia al riesgo y está dispuesto a asumir mayores riesgos y tolerar alta volatilidad. Esta dispuesto a tolerar fluctuaciones frecuentes e incluso profundas en su portafolio, disminución de valor, a cambio de obtener rendimientos potencialmente mayores en el mediano plazo.",
 };
 
-const STEPS = [
-  "Portada",
-  "Equipo",
-  "Propuesta de valor",
-  "Estrategia",
-  "Portafolio actual",
-  "Portafolio propuesto",
-  "Comentarios",
-];
+// Cada tipo de documento tiene su propio recorrido de pasos — Revisión no
+// arma un portafolio propuesto (es sobre una cuenta que ya existe), pero sí
+// tiene "Evolución de la cuenta", que Propuesta no tiene.
+const STEPS_PROPUESTA = ["Portada", "Equipo", "Propuesta de valor", "Estrategia", "Portafolio actual", "Portafolio propuesto", "Comentarios"];
+const STEPS_REVISION = ["Portada", "Equipo", "Propuesta de valor", "Estrategia", "Evolución de la cuenta", "Portafolio actual", "Comentarios"];
 
 const DEFAULT_TEAM = [
   { id: 1, nombre: "Carmela Hernández", puesto: "Investment Specialist", educacion: "Lic. Economía, Candidate CFA III", incluido: true },
@@ -40,21 +36,35 @@ const DEFAULT_TEAM = [
 
 const CATEGORIAS = ["Renta Fija", "Multi Activo", "Renta Variable", "Alternativos Líquidos"];
 
-function Section({ title, children }) {
+function Section({ title, subtitle, children }) {
   return (
     <div style={{ marginBottom: 28 }}>
-      <h3 style={{ color: NAVY, fontSize: 13, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", marginBottom: 14 }}>
+      <h3 style={{ color: NAVY, fontSize: 13, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", marginBottom: subtitle ? 4 : 14 }}>
         {title}
       </h3>
+      {subtitle && <p style={{ fontSize: 12.5, color: "#78776f", marginTop: 0, marginBottom: 16 }}>{subtitle}</p>}
       {children}
     </div>
   );
 }
 
-function Field({ label, children }) {
+function Field({ label, children, hint }) {
   return (
     <div style={{ marginBottom: 14 }}>
       <label style={{ display: "block", fontSize: 12.5, color: "#5b5b55", marginBottom: 5 }}>{label}</label>
+      {children}
+      {hint && <div style={{ fontSize: 11, color: "#a5a399", marginTop: 3 }}>{hint}</div>}
+    </div>
+  );
+}
+
+// Campo chico con su etiqueta arriba, pensado para usarse en grillas de
+// varias columnas (portafolio actual) sin depender de recordar qué va en
+// cada casillero.
+function MiniField({ label, children }) {
+  return (
+    <div>
+      <div style={{ fontSize: 10.5, color: "#9b9993", marginBottom: 3, textTransform: "uppercase", letterSpacing: 0.4 }}>{label}</div>
       {children}
     </div>
   );
@@ -64,6 +74,17 @@ const inputStyle = {
   width: "100%", padding: "9px 11px", borderRadius: 6, border: "1px solid #d8d5cc",
   fontSize: 14, fontFamily: "inherit", boxSizing: "border-box", background: "#fff",
 };
+
+const miniInputStyle = { ...inputStyle, padding: "7px 9px", fontSize: 13 };
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function App() {
   const [usuario, setUsuario] = useState("");
@@ -89,9 +110,20 @@ export default function App() {
   const [proposedAssets, setProposedAssets] = useState([]);
   const [comentarios, setComentarios] = useState("");
 
+  const [evolucionFileName, setEvolucionFileName] = useState("");
+  const [evolucionImageBase64, setEvolucionImageBase64] = useState(null);
+
   const [generando, setGenerando] = useState(false);
   const [resultado, setResultado] = useState(null);
   const [error, setError] = useState("");
+
+  const currentSteps = tipo === "Revision" ? STEPS_REVISION : STEPS_PROPUESTA;
+  const stepName = currentSteps[step];
+
+  // si se cambia el tipo de documento a mitad de camino, el paso actual
+  // puede dejar de existir en la lista nueva — volvemos al principio para
+  // no quedar en un paso inválido
+  useEffect(() => { setStep(0); }, [tipo]);
 
   // --- Búsqueda de asesor en Supabase (por repcode o nombre) ---
   useEffect(() => {
@@ -138,6 +170,22 @@ export default function App() {
     }));
   }
 
+  async function handleEvolucionFile(file) {
+    if (!file) { setEvolucionFileName(""); setEvolucionImageBase64(null); return; }
+    setEvolucionFileName(file.name);
+    const b64 = await fileToBase64(file);
+    setEvolucionImageBase64(b64);
+  }
+
+  // rendimiento y % de portafolio para Revisión se calculan solos a partir
+  // de costo/valor actual — no hace falta que nadie los tipee ni se
+  // equivoque cargándolos a mano
+  function activoConCalculos(a, totalValor) {
+    const rendimiento = a.costo ? ((a.valor_actual - a.costo) / a.costo) * 100 : 0;
+    const pct = totalValor ? (a.valor_actual / totalValor) * 100 : 0;
+    return { ...a, rendimiento, pct };
+  }
+
   function buildConfig() {
     const categorias = CATEGORIAS.map((label) => ({
       label: label === "Renta Fija" ? "Fondos Renta Fija" : label === "Multi Activo" ? "Fondo Multi Activo" : label === "Renta Variable" ? "Fondo Renta Variable" : "Fondos Alternativos Líquidos",
@@ -168,265 +216,20 @@ export default function App() {
       "Alternativos Líquidos": proposedAssets.filter((a) => a.categoria === "Alternativos Líquidos").map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "" })),
     };
 
+    // --- Revisión: los % y rendimiento salen solos de costo/valor actual ---
+    const totalRevision = currentAssets.reduce((s, a) => s + (Number(a.valor_actual) || 0), 0) + Number(cashValorRevision || 0);
+    const revisionAssets = currentAssets.map((a) => activoConCalculos({
+      ...a,
+      valor_actual: Number(a.valor_actual) || 0,
+      costo: Number(a.costo) || 0,
+    }, totalRevision));
+
+    const rf = revisionAssets.filter((a) => a.categoria === "Renta Fija").reduce((s, a) => s + a.valor_actual, 0);
+    const rv = revisionAssets.filter((a) => a.categoria === "Renta Variable").reduce((s, a) => s + a.valor_actual, 0);
+    const assetAllocationRevision = totalRevision
+      ? { "Renta Fija": rf / totalRevision, "Renta Variable": rv / totalRevision, "Cash": Number(cashValorRevision || 0) / totalRevision }
+      : { "Renta Fija": 0, "Renta Variable": 0, "Cash": 0 };
+
     return {
       cliente, nro_cuenta: nroCuenta,
-      incluir_pagina2: incluirPagina2, incluir_valor: incluirValueProp,
-      // el template de Propuesta solo tiene 4 casilleros armados para el
-      // equipo (no incluye a Belén); el de Revisión sí tiene 5. Se recorta
-      // acá para no depender de que el usuario se acuerde de destildar a
-      // alguien.
-      equipo: team.filter((m) => m.incluido).slice(0, tipo === "Propuesta" ? 4 : 5).map((m) => ({ nombre: m.nombre, puesto: m.puesto, educacion: m.educacion })),
-      perfil_riesgo: perfil,
-      portafolio_actual: tipo === "Revision"
-        ? currentAssets.map((a) => ({ isin: a.isin, nombre: a.nombre, pct: a.pct, costo: a.costo, valor_actual: a.valor_actual, rendimiento: a.rendimiento }))
-        : currentAssets.map((a) => ({ nombre: a.nombre, pct: a.pct, importe: a.importe })),
-      cash_valor: cashValorRevision,
-      columnas_visibles: ["pct", "isin", "nombre", "costo", "valor_actual", "rendimiento"],
-      asset_allocation: (() => {
-        const total = currentAssets.reduce((s, a) => s + (a.valor_actual || 0), 0) + cashValorRevision;
-        const rf = currentAssets.filter((a) => a.categoria === "Renta Fija").reduce((s, a) => s + (a.valor_actual || 0), 0);
-        const rv = currentAssets.filter((a) => a.categoria === "Renta Variable").reduce((s, a) => s + (a.valor_actual || 0), 0);
-        return total ? { "Renta Fija": rf / total, "Renta Variable": rv / total, "Cash": cashValorRevision / total } : { "Renta Fija": 0, "Renta Variable": 0, "Cash": 0 };
-      })(),
-      categorias_propuesto: categorias,
-      cash_monto: cashMonto,
-      monto_total: montoInvertir,
-      asset_allocation_donut1: donut1,
-      asset_allocation_donut2: donut2,
-      fondos_por_categoria: fondosPorCategoria,
-      comentarios,
-    };
-  }
-
-  async function handleGenerar() {
-    setGenerando(true); setError(""); setResultado(null);
-    try {
-      const config = buildConfig();
-      const res = await fetch(`${BACKEND_URL}/generar`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tipo, creado_por: usuario, repcode, cliente, config }),
-      });
-      if (!res.ok) throw new Error(`El backend respondió ${res.status}`);
-      const data = await res.json();
-      setResultado(data);
-    } catch (e) {
-      setError(e.message || "Error generando la propuesta");
-    } finally {
-      setGenerando(false);
-    }
-  }
-
-  if (!usuario || !asesorSel) {
-    return (
-      <div style={{ fontFamily: "Montserrat, sans-serif", background: CREAM, minHeight: "100vh", padding: 40, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div style={{ background: "#fff", borderRadius: 12, padding: "40px 44px", width: 440, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
-          <h2 style={{ color: NAVY, margin: "0 0 6px", fontSize: 20 }}>Automatizador de propuestas</h2>
-          <p style={{ color: "#78776f", fontSize: 13.5, margin: "0 0 26px" }}>Elegí quién sos y a qué asesor corresponde esta propuesta.</p>
-
-          <Field label="¿Quién sos?">
-            <select style={inputStyle} value={usuario} onChange={(e) => setUsuario(e.target.value)}>
-              <option value="">Seleccioná tu nombre</option>
-              {USUARIOS.map((u) => <option key={u} value={u}>{u}</option>)}
-            </select>
-          </Field>
-
-          <Field label="Asesor / RepCode">
-            <input style={inputStyle} value={asesorQuery} onChange={(e) => { setAsesorQuery(e.target.value); setAsesorSel(null); setRepcode(""); }} placeholder="Buscar por RepCode o nombre" />
-          </Field>
-          {asesorResultados.length > 0 && !asesorSel && (
-            <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginTop: -8, marginBottom: 14, maxHeight: 180, overflowY: "auto" }}>
-              {asesorResultados.map((a) => (
-                <div key={a.repcode} onClick={() => { setAsesorSel(a); setRepcode(a.repcode); setAsesorQuery(`${a.repcode} — ${a.nombre}`); setAsesorResultados([]); }}
-                  style={{ padding: "8px 10px", fontSize: 13, cursor: "pointer", borderBottom: "1px solid #f2f0e9" }}>
-                  <b>{a.repcode}</b> — {a.nombre}
-                </div>
-              ))}
-            </div>
-          )}
-          {asesorSel && (
-            <div style={{ fontSize: 12.5, color: "#78776f", background: CREAM, borderRadius: 6, padding: "8px 10px", marginBottom: 18 }}>
-              {asesorSel.email}
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ fontFamily: "Montserrat, sans-serif", background: CREAM, minHeight: "100vh" }}>
-      <div style={{ background: NAVY, color: "#fff", padding: "14px 24px", display: "flex", justifyContent: "space-between" }}>
-        <span style={{ fontSize: 14, fontWeight: 600 }}>Automatizador de propuestas</span>
-        <span style={{ fontSize: 12.5, opacity: 0.85 }}>{usuario} · {repcode} — {asesorSel.nombre}</span>
-      </div>
-
-      <div style={{ display: "flex" }}>
-        <div style={{ width: 210, padding: "24px 0", borderRight: "1px solid #e4e1d6" }}>
-          {STEPS.map((s, i) => (
-            <div key={s} onClick={() => setStep(i)} style={{
-              padding: "10px 22px", fontSize: 13.5, cursor: "pointer",
-              color: i === step ? NAVY : "#8c8b83", fontWeight: i === step ? 600 : 400,
-              borderLeft: i === step ? `3px solid ${NAVY}` : "3px solid transparent",
-              background: i === step ? "#fff" : "transparent",
-            }}>{i + 1}. {s}</div>
-          ))}
-        </div>
-
-        <div style={{ flex: 1, padding: "28px 36px", maxWidth: 720 }}>
-          {step === 0 && (
-            <Section title="Portada">
-              <Field label="Tipo de documento">
-                <div style={{ display: "flex", gap: 10 }}>
-                  {["Propuesta", "Revision"].map((t) => (
-                    <button key={t} onClick={() => setTipo(t)} style={{ padding: "8px 16px", borderRadius: 6, border: `1px solid ${tipo === t ? NAVY : "#d8d5cc"}`, background: tipo === t ? NAVY : "#fff", color: tipo === t ? "#fff" : "#333", cursor: "pointer" }}>{t === "Revision" ? "Revisión" : t}</button>
-                  ))}
-                </div>
-              </Field>
-              <Field label="Nombre del cliente">
-                <input style={inputStyle} value={cliente} onChange={(e) => setCliente(e.target.value)} />
-              </Field>
-              {tipo === "Revision" && (
-                <Field label="Número de cuenta StoneX">
-                  <input style={inputStyle} value={nroCuenta} onChange={(e) => setNroCuenta(e.target.value)} />
-                </Field>
-              )}
-              {tipo === "Propuesta" && (
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <input type="checkbox" checked={incluirPagina2} onChange={(e) => setIncluirPagina2(e.target.checked)} />
-                  <span style={{ fontSize: 13.5 }}>Incluir página 2</span>
-                </div>
-              )}
-            </Section>
-          )}
-
-          {step === 1 && (
-            <Section title="Equipo">
-              {team.map((m) => (
-                <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0" }}>
-                  <input type="checkbox" checked={m.incluido} onChange={() => setTeam((prev) => prev.map((x) => x.id === m.id ? { ...x, incluido: !x.incluido } : x))} />
-                  <div style={{ fontSize: 13.5 }}>{m.nombre} — <span style={{ color: "#78776f" }}>{m.puesto}</span></div>
-                </div>
-              ))}
-            </Section>
-          )}
-
-          {step === 2 && (
-            <Section title="Propuesta de valor">
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input type="checkbox" checked={incluirValueProp} onChange={(e) => setIncluirValueProp(e.target.checked)} />
-                <span style={{ fontSize: 13.5 }}>Incluir esta página</span>
-              </div>
-            </Section>
-          )}
-
-          {step === 3 && (
-            <Section title="Estrategia">
-              <Field label="Perfil de riesgo">
-                <div style={{ display: "flex", gap: 10 }}>
-                  {Object.keys(RISK_TEXT).map((p) => (
-                    <button key={p} onClick={() => setPerfil(p)} style={{ padding: "8px 16px", borderRadius: 6, border: `1px solid ${perfil === p ? NAVY : "#d8d5cc"}`, background: perfil === p ? NAVY : "#fff", color: perfil === p ? "#fff" : "#333", cursor: "pointer" }}>{p}</button>
-                  ))}
-                </div>
-              </Field>
-              <div style={{ background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 16, fontSize: 13.5 }}>{RISK_TEXT[perfil]}</div>
-            </Section>
-          )}
-
-          {step === 4 && (
-            <Section title="Portafolio actual">
-              <button onClick={() => setCurrentAssets((prev) => [...prev, tipo === "Revision" ? { isin: "", nombre: "", categoria: "Renta Variable", pct: 0, costo: 0, valor_actual: 0, rendimiento: 0 } : { nombre: "", pct: 0, importe: 0 }])} style={{ marginBottom: 12, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar activo</button>
-
-              {tipo === "Revision" && (
-                <Field label="Cash / equivalentes (USD)">
-                  <input type="number" style={{ ...inputStyle, maxWidth: 220 }} value={cashValorRevision} onChange={(e) => setCashValorRevision(+e.target.value)} />
-                </Field>
-              )}
-
-              {currentAssets.map((a, i) => (
-                <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6 }}>
-                  {tipo === "Revision" ? (
-                    <>
-                      <input style={{ ...inputStyle, width: 130 }} placeholder="ISIN" value={a.isin} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, isin: e.target.value } : x))} />
-                      <input style={{ ...inputStyle, flex: 2 }} placeholder="Nombre" value={a.nombre} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, nombre: e.target.value } : x))} />
-                      <select style={{ ...inputStyle, width: 130 }} value={a.categoria} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, categoria: e.target.value } : x))}>
-                        <option value="Renta Fija">Renta Fija</option>
-                        <option value="Renta Variable">Renta Variable</option>
-                      </select>
-                      <input style={{ ...inputStyle, width: 60 }} type="number" placeholder="%" value={a.pct} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, pct: +e.target.value } : x))} />
-                      <input style={{ ...inputStyle, width: 100 }} type="number" placeholder="Costo" value={a.costo} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, costo: +e.target.value } : x))} />
-                      <input style={{ ...inputStyle, width: 100 }} type="number" placeholder="Valor actual" value={a.valor_actual} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, valor_actual: +e.target.value } : x))} />
-                      <input style={{ ...inputStyle, width: 80 }} type="number" placeholder="Rend. %" value={a.rendimiento} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, rendimiento: +e.target.value } : x))} />
-                    </>
-                  ) : (
-                    <>
-                      <input style={{ ...inputStyle, flex: 2 }} placeholder="Nombre" value={a.nombre} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, nombre: e.target.value } : x))} />
-                      <input style={{ ...inputStyle, width: 70 }} type="number" placeholder="%" value={a.pct} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, pct: +e.target.value } : x))} />
-                      <input style={{ ...inputStyle, width: 120 }} type="number" placeholder="Importe" value={a.importe} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, importe: +e.target.value } : x))} />
-                    </>
-                  )}
-                </div>
-              ))}
-            </Section>
-          )}
-
-          {step === 5 && (
-            <Section title="Portafolio propuesto">
-              <Field label="Monto total a invertir (USD)">
-                <input type="number" style={{ ...inputStyle, maxWidth: 220 }} value={montoInvertir} onChange={(e) => setMontoInvertir(+e.target.value)} />
-              </Field>
-              <Field label="Buscar fondo (ISIN o nombre) en la biblioteca de Supabase">
-                <input style={inputStyle} value={fondoQuery} onChange={(e) => setFondoQuery(e.target.value)} placeholder="Ej: IE00B3XXRP09 o Vanguard" />
-              </Field>
-              {fondoResultados.length > 0 && (
-                <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginBottom: 14, maxHeight: 200, overflowY: "auto" }}>
-                  {fondoResultados.map((f) => (
-                    <div key={f.isin} onClick={() => addProposedAsset(f)} style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #f2f0e9" }}>
-                      <b>{f.isin}</b> — {f.nombre} {f.uso_frecuente && <span style={{ color: TEAL }}>★ frecuente</span>}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {proposedAssets.map((a, i) => (
-                <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 0", borderBottom: "1px solid #eae7dc" }}>
-                  <div style={{ flex: 1, fontSize: 13 }}>{a.nombre}</div>
-                  <select style={{ ...inputStyle, width: 150 }} value={a.categoria} onChange={(e) => updateProposedField(i, "categoria", e.target.value)}>
-                    {CATEGORIAS.map((c) => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                  <input type="number" style={{ ...inputStyle, width: 60 }} value={a.pct} onChange={(e) => updateProposedField(i, "pct", +e.target.value)} />
-                  <input type="number" style={{ ...inputStyle, width: 100 }} value={a.monto} onChange={(e) => updateProposedField(i, "monto", +e.target.value)} />
-                </div>
-              ))}
-            </Section>
-          )}
-
-          {step === 6 && (
-            <Section title="Comentarios">
-              <textarea value={comentarios} onChange={(e) => setComentarios(e.target.value)} rows={8} style={{ ...inputStyle, resize: "vertical" }} />
-            </Section>
-          )}
-
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 24, paddingTop: 18, borderTop: "1px solid #eae7dc" }}>
-            <button disabled={step === 0} onClick={() => setStep((s) => s - 1)} style={{ padding: "9px 18px", borderRadius: 6, border: "1px solid #d8d5cc", background: "#fff", opacity: step === 0 ? 0.4 : 1 }}>← Atrás</button>
-            {step < STEPS.length - 1 ? (
-              <button onClick={() => setStep((s) => s + 1)} style={{ padding: "9px 18px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontWeight: 600 }}>Siguiente →</button>
-            ) : (
-              <button onClick={handleGenerar} disabled={generando} style={{ padding: "9px 20px", borderRadius: 6, border: "none", background: TEAL, color: "#fff", fontWeight: 600 }}>
-                {generando ? "Generando…" : "Generar PPT + PDF"}
-              </button>
-            )}
-          </div>
-
-          {error && <div style={{ marginTop: 14, color: "#b23b3b", fontSize: 13 }}>{error}</div>}
-          {resultado && (
-            <div style={{ marginTop: 14, background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 16 }}>
-              <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 8 }}>¡Listo!</div>
-              <a href={resultado.pptx_url} target="_blank" rel="noreferrer" style={{ marginRight: 16, color: NAVY }}>Descargar PPTX</a>
-              {resultado.pdf_url && <a href={resultado.pdf_url} target="_blank" rel="noreferrer" style={{ color: NAVY }}>Descargar PDF</a>}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
+      incluir_pagina2: incluirPagina2, incluir_valor:
