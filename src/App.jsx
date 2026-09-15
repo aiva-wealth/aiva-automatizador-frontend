@@ -59,9 +59,6 @@ function Field({ label, children, hint }) {
   );
 }
 
-// Campo chico con su etiqueta arriba, pensado para usarse en grillas de
-// varias columnas (portafolio actual) sin depender de recordar qué va en
-// cada casillero.
 function MiniField({ label, children }) {
   return (
     <div>
@@ -123,15 +120,35 @@ export default function App() {
   const [resultado, setResultado] = useState(null);
   const [error, setError] = useState("");
 
+  const [vista, setVista] = useState("nueva"); // "nueva" | "registro"
+  const [registro, setRegistro] = useState([]);
+  const [registroCargando, setRegistroCargando] = useState(false);
+
+  async function cargarRegistro() {
+    setRegistroCargando(true);
+    const { data } = await supabase
+      .from("propuestas")
+      .select("id, tipo, creado_por, repcode, cliente, nro_cuenta, monto, status, archivo_pptx_url, archivo_pdf_url, created_at")
+      .order("created_at", { ascending: false })
+      .limit(100);
+    setRegistro(data || []);
+    setRegistroCargando(false);
+  }
+
+  async function cambiarStatus(id, nuevoStatus) {
+    await supabase.from("propuestas").update({ status: nuevoStatus }).eq("id", id);
+    setRegistro((prev) => prev.map((r) => r.id === id ? { ...r, status: nuevoStatus } : r));
+  }
+
+  useEffect(() => {
+    if (vista === "registro") cargarRegistro();
+  }, [vista]);
+
   const currentSteps = tipo === "Revision" ? STEPS_REVISION : STEPS_PROPUESTA;
   const stepName = currentSteps[step];
 
-  // si se cambia el tipo de documento a mitad de camino, el paso actual
-  // puede dejar de existir en la lista nueva — volvemos al principio para
-  // no quedar en un paso inválido
   useEffect(() => { setStep(0); }, [tipo]);
 
-  // --- Búsqueda de asesor en Supabase (por repcode o nombre) ---
   useEffect(() => {
     if (asesorQuery.trim().length < 2) { setAsesorResultados([]); return; }
     const t = setTimeout(async () => {
@@ -145,7 +162,6 @@ export default function App() {
     return () => clearTimeout(t);
   }, [asesorQuery]);
 
-  // --- Búsqueda de fondos en Supabase (por ISIN o nombre) ---
   useEffect(() => {
     if (fondoQuery.trim().length < 2) { setFondoResultados([]); return; }
     const t = setTimeout(async () => {
@@ -169,17 +185,10 @@ export default function App() {
   async function toggleFavorito(idx) {
     const asset = proposedAssets[idx];
     const nuevoValor = !asset.uso_frecuente;
-    // se guarda en Supabase de una — la próxima vez que se busque este
-    // fondo (en esta propuesta o en cualquier otra) ya va a aparecer
-    // marcado como frecuente
     await supabase.from("fondos").update({ uso_frecuente: nuevoValor }).eq("isin", asset.isin);
     setProposedAssets((prev) => prev.map((a, i) => i === idx ? { ...a, uso_frecuente: nuevoValor } : a));
   }
 
-  // Agrega un activo que NO está en la biblioteca (una acción, un bono,
-  // cualquier cosa) — lo guarda en Supabase (upsert por ISIN) para que a
-  // partir de ahora quede buscable como cualquier otro fondo, y lo suma a
-  // esta propuesta.
   async function agregarActivoNuevo() {
     if (!nuevoActivoNombre.trim() || !nuevoActivoIsin.trim()) return;
     const nuevoFondo = { isin: nuevoActivoIsin.trim(), nombre: nuevoActivoNombre.trim(), uso_frecuente: false };
@@ -212,9 +221,6 @@ export default function App() {
     setEvolucionInputKey((k) => k + 1);
   }
 
-  // Importa el excel "Open Tax Lots" de StoneX para el portafolio actual de
-  // una Propuesta nueva (a diferencia de Revisión, acá solo hace falta
-  // nombre + importe — el % se calcula solo sobre el total).
   async function handleExcelImportPropuestaActual(file) {
     if (!file) return;
     const buf = await file.arrayBuffer();
@@ -233,9 +239,6 @@ export default function App() {
     setCurrentAssets((prev) => [...prev, ...nuevos]);
   }
 
-  // Importa el excel "Open Tax Lots" de StoneX (hoja "By Security") para el
-  // portafolio actual de Revisión — Symbol/ID, Description, Adjusted Cost y
-  // Mkt Value son exactamente lo que necesitamos.
   async function handleExcelImport(file) {
     if (!file) return;
     const buf = await file.arrayBuffer();
@@ -264,9 +267,6 @@ export default function App() {
     setCurrentAssets((prev) => [...prev, ...nuevos]);
   }
 
-  // rendimiento y % de portafolio para Revisión se calculan solos a partir
-  // de costo/valor actual — no hace falta que nadie los tipee ni se
-  // equivoque cargándolos a mano
   function activoConCalculos(a, totalValor) {
     const rendimiento = a.costo ? ((a.valor_actual - a.costo) / a.costo) * 100 : 0;
     const pct = totalValor ? (a.valor_actual / totalValor) * 100 : 0;
@@ -303,7 +303,6 @@ export default function App() {
       "Alternativos Líquidos": proposedAssets.filter((a) => a.categoria === "Alternativos Líquidos").map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "" })),
     };
 
-    // --- Revisión: los % y rendimiento salen solos de costo/valor actual ---
     const totalRevision = currentAssets.reduce((s, a) => s + (Number(a.valor_actual) || 0), 0) + Number(cashValorRevision || 0);
     const revisionAssets = currentAssets.map((a) => activoConCalculos({
       ...a,
@@ -410,11 +409,57 @@ export default function App() {
 
   return (
     <div style={{ fontFamily: "Montserrat, sans-serif", background: CREAM, minHeight: "100vh" }}>
-      <div style={{ background: NAVY, color: "#fff", padding: "14px 24px", display: "flex", justifyContent: "space-between" }}>
+      <div style={{ background: NAVY, color: "#fff", padding: "14px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontSize: 14, fontWeight: 600 }}>Automatizador de propuestas</span>
-        <span style={{ fontSize: 12.5, opacity: 0.85 }}>{usuario} · {repcode} — {asesorSel.nombre}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+          <button onClick={() => setVista("nueva")} style={{ background: "none", border: "none", color: vista === "nueva" ? "#fff" : "#9fb0c9", fontWeight: vista === "nueva" ? 600 : 400, cursor: "pointer", fontSize: 13 }}>Nueva propuesta</button>
+          <button onClick={() => setVista("registro")} style={{ background: "none", border: "none", color: vista === "registro" ? "#fff" : "#9fb0c9", fontWeight: vista === "registro" ? 600 : 400, cursor: "pointer", fontSize: 13 }}>Registro</button>
+          <span style={{ fontSize: 12.5, opacity: 0.85 }}>{usuario} · {repcode} — {asesorSel.nombre}</span>
+        </div>
       </div>
 
+      {vista === "registro" ? (
+        <div style={{ padding: "28px 36px" }}>
+          <h3 style={{ color: NAVY, fontSize: 16, marginBottom: 16 }}>Registro de propuestas</h3>
+          {registroCargando && <div style={{ fontSize: 13, color: "#78776f" }}>Cargando…</div>}
+          {!registroCargando && registro.length === 0 && <div style={{ fontSize: 13, color: "#78776f" }}>Todavía no hay propuestas generadas.</div>}
+          {!registroCargando && registro.length > 0 && (
+            <table style={{ width: "100%", borderCollapse: "collapse", background: "#fff", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: NAVY, color: "#fff" }}>
+                  {["Fecha", "Tipo", "Cliente / Cuenta", "Hecha por", "Asesor", "Monto", "Status", "Archivos"].map((h) => (
+                    <th key={h} style={{ padding: "8px 10px", textAlign: "left" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {registro.map((r) => (
+                  <tr key={r.id} style={{ borderBottom: "1px solid #eae7dc" }}>
+                    <td style={{ padding: "8px 10px" }}>{new Date(r.created_at).toLocaleDateString()}</td>
+                    <td style={{ padding: "8px 10px" }}>{r.tipo === "Revision" ? "Revisión" : "Propuesta"}</td>
+                    <td style={{ padding: "8px 10px" }}>{r.tipo === "Revision" ? (r.nro_cuenta || "—") : (r.cliente || "—")}</td>
+                    <td style={{ padding: "8px 10px" }}>{r.creado_por}</td>
+                    <td style={{ padding: "8px 10px" }}>{r.repcode}</td>
+                    <td style={{ padding: "8px 10px" }}>{r.monto ? `$${Number(r.monto).toLocaleString()}` : "—"}</td>
+                    <td style={{ padding: "8px 10px" }}>
+                      <select value={r.status} onChange={(e) => cambiarStatus(r.id, e.target.value)} style={{ ...miniInputStyle, padding: "4px 6px" }}>
+                        <option value="en_proceso">En proceso</option>
+                        <option value="enviada">Enviada</option>
+                        <option value="confirmada">Confirmada</option>
+                        <option value="invertida">Invertida</option>
+                      </select>
+                    </td>
+                    <td style={{ padding: "8px 10px" }}>
+                      {r.archivo_pptx_url && <a href={r.archivo_pptx_url} target="_blank" rel="noreferrer" style={{ color: NAVY, marginRight: 10 }}>PPTX</a>}
+                      {r.archivo_pdf_url && <a href={r.archivo_pdf_url} target="_blank" rel="noreferrer" style={{ color: NAVY }}>PDF</a>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      ) : (
       <div style={{ display: "flex" }}>
         <div style={{ width: 210, padding: "24px 0", borderRight: "1px solid #e4e1d6" }}>
           {currentSteps.map((s, i) => (
@@ -728,6 +773,7 @@ export default function App() {
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }
