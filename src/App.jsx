@@ -109,6 +109,7 @@ export default function App() {
   const [fondoQuery, setFondoQuery] = useState("");
   const [fondoResultados, setFondoResultados] = useState([]);
   const [proposedAssets, setProposedAssets] = useState([]);
+  const [cashManualPropuesta, setCashManualPropuesta] = useState(0);
   const [comentarios, setComentarios] = useState("");
 
   const [evolucionFileName, setEvolucionFileName] = useState("");
@@ -160,6 +161,16 @@ export default function App() {
     setProposedAssets((prev) => [...prev, { ...fondo, categoria: fondo.categoria || "Renta Variable", pct: 0, monto: 0, ytd: 0, y1: 0, y3: 0, y5: 0 }]);
     setFondoQuery("");
     setFondoResultados([]);
+  }
+
+  async function toggleFavorito(idx) {
+    const asset = proposedAssets[idx];
+    const nuevoValor = !asset.uso_frecuente;
+    // se guarda en Supabase de una — la próxima vez que se busque este
+    // fondo (en esta propuesta o en cualquier otra) ya va a aparecer
+    // marcado como frecuente
+    await supabase.from("fondos").update({ uso_frecuente: nuevoValor }).eq("isin", asset.isin);
+    setProposedAssets((prev) => prev.map((a, i) => i === idx ? { ...a, uso_frecuente: nuevoValor } : a));
   }
 
   function updateProposedField(idx, field, value) {
@@ -233,7 +244,7 @@ export default function App() {
       })),
     })).filter((c) => c.fondos.length > 0);
 
-    const cashMonto = Math.max(0, montoInvertir - proposedAssets.reduce((s, a) => s + (a.monto || 0), 0));
+    const cashMonto = Number(cashManualPropuesta) || 0;
 
     const byCat = {};
     proposedAssets.forEach((a) => { byCat[a.categoria] = (byCat[a.categoria] || 0) + (a.pct || 0) / 100; });
@@ -550,9 +561,12 @@ export default function App() {
           )}
 
           {stepName === "Portafolio propuesto" && (
-            <Section title="Portafolio propuesto">
+            <Section title="Portafolio propuesto" subtitle="Buscá fondos en la biblioteca, asigná % o monto (se calculan solos entre sí), y completá los rendimientos históricos si los tenés a mano.">
               <Field label="Monto total a invertir (USD)">
                 <input type="number" style={{ ...inputStyle, maxWidth: 220 }} value={montoInvertir} onChange={(e) => setMontoInvertir(+e.target.value)} />
+              </Field>
+              <Field label="Cash (USD)" hint="La parte del monto que se deja en efectivo, sin invertir en ningún fondo.">
+                <input type="number" style={{ ...inputStyle, maxWidth: 220 }} value={cashManualPropuesta} onChange={(e) => setCashManualPropuesta(+e.target.value)} />
               </Field>
               <Field label="Buscar fondo (ISIN o nombre) en la biblioteca de Supabase">
                 <input style={inputStyle} value={fondoQuery} onChange={(e) => setFondoQuery(e.target.value)} placeholder="Ej: IE00B3XXRP09 o Vanguard" />
@@ -566,14 +580,52 @@ export default function App() {
                   ))}
                 </div>
               )}
+
+              {(() => {
+                const sumaFondos = proposedAssets.reduce((s, a) => s + (Number(a.monto) || 0), 0);
+                const falta = montoInvertir - sumaFondos - (Number(cashManualPropuesta) || 0);
+                return (
+                  <div style={{ fontSize: 12.5, marginBottom: 14, color: Math.abs(falta) < 1 ? "#3a7d44" : "#b23b3b" }}>
+                    {Math.abs(falta) < 1 ? "✓ Asignado el 100% del monto." : falta > 0 ? `Falta asignar ${falta.toLocaleString()} USD para llegar al monto total.` : `Te pasaste por ${Math.abs(falta).toLocaleString()} USD del monto total.`}
+                  </div>
+                );
+              })()}
+
               {proposedAssets.map((a, i) => (
-                <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 0", borderBottom: "1px solid #eae7dc" }}>
-                  <div style={{ flex: 1, fontSize: 13 }}>{a.nombre}</div>
-                  <select style={{ ...inputStyle, width: 150 }} value={a.categoria} onChange={(e) => updateProposedField(i, "categoria", e.target.value)}>
-                    {CATEGORIAS.map((c) => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                  <input type="number" style={{ ...inputStyle, width: 60 }} value={a.pct} onChange={(e) => updateProposedField(i, "pct", +e.target.value)} />
-                  <input type="number" style={{ ...inputStyle, width: 100 }} value={a.monto} onChange={(e) => updateProposedField(i, "monto", +e.target.value)} />
+                <div key={i} style={{ background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 12, marginBottom: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                    <div style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{a.nombre}</div>
+                    <button onClick={() => toggleFavorito(i)} title="Marcar/desmarcar como fondo frecuente" style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: a.uso_frecuente ? TEAL : "#d8d5cc", padding: 0 }}>★</button>
+                    <button onClick={() => setProposedAssets((prev) => prev.filter((_, j) => j !== i))} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer" }}>Quitar</button>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1.3fr 0.8fr 1fr", gap: 10, marginBottom: 8 }}>
+                    <MiniField label="Categoría">
+                      <select style={miniInputStyle} value={a.categoria} onChange={(e) => updateProposedField(i, "categoria", e.target.value)}>
+                        {CATEGORIAS.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </MiniField>
+                    <MiniField label="% del monto">
+                      <input type="number" style={miniInputStyle} value={a.pct} onChange={(e) => updateProposedField(i, "pct", +e.target.value)} />
+                    </MiniField>
+                    <MiniField label="Monto (USD)">
+                      <input type="number" style={miniInputStyle} value={a.monto} onChange={(e) => updateProposedField(i, "monto", +e.target.value)} />
+                    </MiniField>
+                  </div>
+                  <div style={{ fontSize: 10.5, color: "#9b9993", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.4 }}>Rendimientos históricos (%, opcional)</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
+                    <MiniField label="YTD">
+                      <input type="number" style={miniInputStyle} value={a.ytd} onChange={(e) => updateProposedField(i, "ytd", +e.target.value)} />
+                    </MiniField>
+                    <MiniField label="1 año">
+                      <input type="number" style={miniInputStyle} value={a.y1} onChange={(e) => updateProposedField(i, "y1", +e.target.value)} />
+                    </MiniField>
+                    <MiniField label="3 años">
+                      <input type="number" style={miniInputStyle} value={a.y3} onChange={(e) => updateProposedField(i, "y3", +e.target.value)} />
+                    </MiniField>
+                    <MiniField label="5 años">
+                      <input type="number" style={miniInputStyle} value={a.y5} onChange={(e) => updateProposedField(i, "y5", +e.target.value)} />
+                    </MiniField>
+                  </div>
                 </div>
               ))}
             </Section>
