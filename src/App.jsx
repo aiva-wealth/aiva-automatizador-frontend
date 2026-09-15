@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { supabase } from "./supabaseClient";
+import * as XLSX from "xlsx";
 
 const NAVY = "#1D2E49";
 const CREAM = "#F5F1EC";
@@ -112,6 +113,7 @@ export default function App() {
 
   const [evolucionFileName, setEvolucionFileName] = useState("");
   const [evolucionImageBase64, setEvolucionImageBase64] = useState(null);
+  const [evolucionInputKey, setEvolucionInputKey] = useState(0);
 
   const [generando, setGenerando] = useState(false);
   const [resultado, setResultado] = useState(null);
@@ -175,6 +177,43 @@ export default function App() {
     setEvolucionFileName(file.name);
     const b64 = await fileToBase64(file);
     setEvolucionImageBase64(b64);
+  }
+
+  function quitarEvolucionFile() {
+    setEvolucionFileName("");
+    setEvolucionImageBase64(null);
+    setEvolucionInputKey((k) => k + 1);
+  }
+
+  // Importa el excel "Open Tax Lots" de StoneX (hoja "By Security") y arma
+  // las filas de portafolio actual solas — Symbol/ID, Description,
+  // Adjusted Cost y Mkt Value son exactamente lo que necesitamos.
+  async function handleExcelImport(file) {
+    if (!file) return;
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: "array" });
+    const sheetName = wb.SheetNames.includes("By Security") ? "By Security" : wb.SheetNames[0];
+    const ws = wb.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
+    const nuevos = rows
+      .map((r) => {
+        const cantidad = Number(r["Quantity"]) || 0;
+        const unitCost = Number(r["Unit Cost"]) || 0;
+        const usdPrice = Number(r["USD Price"]) || 0;
+        const costo = Number(r["Adjusted Cost"]) || (unitCost * cantidad) || 0;
+        const valor_actual = Number(r["Mkt Value"]) || (usdPrice * cantidad) || 0;
+        return {
+          isin: r["Symbol/ID"] || "",
+          nombre: r["Description"] || "",
+          categoria: "Renta Variable",
+          costo,
+          valor_actual,
+          precio_unidad: "",
+          cantidad: "",
+        };
+      })
+      .filter((a) => a.isin || a.nombre);
+    setCurrentAssets((prev) => [...prev, ...nuevos]);
   }
 
   // rendimiento y % de portafolio para Revisión se calculan solos a partir
@@ -393,6 +432,7 @@ export default function App() {
             <Section title="Evolución de la cuenta" subtitle="Todavía no tenemos conectado el circuito de datos reales de PowerBI, así que esta página se arma a partir de una imagen que subís vos (una captura del resumen + gráfico de esta cuenta). Si no subís nada, esta página directamente no va a aparecer en el documento final.">
               <Field label="Imagen de evolución de la cuenta (PNG o JPG)">
                 <input
+                  key={evolucionInputKey}
                   type="file"
                   accept="image/*"
                   onChange={(e) => handleEvolucionFile(e.target.files[0])}
@@ -400,7 +440,10 @@ export default function App() {
                 />
               </Field>
               {evolucionFileName && (
-                <div style={{ fontSize: 12.5, color: TEAL, marginBottom: 8 }}>✓ {evolucionFileName} — se va a incluir la página</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                  <div style={{ fontSize: 12.5, color: TEAL }}>✓ {evolucionFileName} — se va a incluir la página</div>
+                  <button onClick={quitarEvolucionFile} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer", padding: 0, textDecoration: "underline" }}>Quitar archivo</button>
+                </div>
               )}
               {!evolucionFileName && (
                 <div style={{ fontSize: 12.5, color: "#a5a399" }}>Sin archivo subido — esta página no va a aparecer en el documento.</div>
@@ -414,7 +457,11 @@ export default function App() {
                 <input type="number" style={{ ...inputStyle, maxWidth: 220 }} value={cashValorRevision} onChange={(e) => setCashValorRevision(+e.target.value)} />
               </Field>
 
-              <button onClick={() => setCurrentAssets((prev) => [...prev, { isin: "", nombre: "", categoria: "Renta Variable", costo: 0, valor_actual: 0 }])} style={{ marginBottom: 14, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar activo</button>
+              <Field label="Importar desde Excel (Open Tax Lots de StoneX)" hint="Toma Symbol/ID, Description, Adjusted Cost y Mkt Value de la hoja 'By Security' y agrega una fila por activo.">
+                <input type="file" accept=".xlsx,.xls" onChange={(e) => handleExcelImport(e.target.files[0])} style={{ ...inputStyle, padding: "8px" }} />
+              </Field>
+
+              <button onClick={() => setCurrentAssets((prev) => [...prev, { isin: "", nombre: "", categoria: "Renta Variable", costo: 0, valor_actual: 0, precio_unidad: "", cantidad: "" }])} style={{ marginBottom: 14, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar activo a mano</button>
 
               {currentAssets.map((a, i) => {
                 const rendimiento = a.costo ? (((a.valor_actual - a.costo) / a.costo) * 100).toFixed(1) : "0.0";
@@ -435,8 +482,35 @@ export default function App() {
                         </select>
                       </MiniField>
                     </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, alignItems: "end", marginBottom: 8 }}>
+                      <MiniField label="Precio unidad (opcional)">
+                        <input type="number" style={miniInputStyle} value={a.precio_unidad} onChange={(e) => {
+                          const precio_unidad = e.target.value;
+                          setCurrentAssets((prev) => prev.map((x, j) => {
+                            if (j !== i) return x;
+                            const cantidad = +x.cantidad || 0;
+                            const costo = precio_unidad && cantidad ? +precio_unidad * cantidad : x.costo;
+                            return { ...x, precio_unidad, costo };
+                          }));
+                        }} />
+                      </MiniField>
+                      <MiniField label="Cantidad (opcional)">
+                        <input type="number" style={miniInputStyle} value={a.cantidad} onChange={(e) => {
+                          const cantidad = e.target.value;
+                          setCurrentAssets((prev) => prev.map((x, j) => {
+                            if (j !== i) return x;
+                            const precio_unidad = +x.precio_unidad || 0;
+                            const costo = precio_unidad && cantidad ? precio_unidad * +cantidad : x.costo;
+                            return { ...x, cantidad, costo };
+                          }));
+                        }} />
+                      </MiniField>
+                      <div style={{ gridColumn: "span 2", fontSize: 11, color: "#a5a399", paddingBottom: 8 }}>
+                        Completá estos dos si querés que el costo se calcule solo. Si no, cargá el costo total directo abajo.
+                      </div>
+                    </div>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, alignItems: "end" }}>
-                      <MiniField label="Costo de compra (USD)">
+                      <MiniField label="Costo total (USD)">
                         <input type="number" style={miniInputStyle} value={a.costo} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, costo: +e.target.value } : x))} />
                       </MiniField>
                       <MiniField label="Valor actual (USD)">
