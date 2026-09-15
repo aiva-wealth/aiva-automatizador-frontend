@@ -59,6 +59,9 @@ function Field({ label, children, hint }) {
   );
 }
 
+// Campo chico con su etiqueta arriba, pensado para usarse en grillas de
+// varias columnas (portafolio actual) sin depender de recordar qué va en
+// cada casillero.
 function MiniField({ label, children }) {
   return (
     <div>
@@ -131,6 +134,14 @@ export default function App() {
   const [bibliotecaGuardando, setBibliotecaGuardando] = useState(false);
   const [bibliotecaMensaje, setBibliotecaMensaje] = useState("");
 
+  // --- Importación masiva de biblioteca (desde el paquete extraído de un PDF/PPTX) ---
+  const [importModo, setImportModo] = useState(false);
+  const [importEntradas, setImportEntradas] = useState([]);
+  const [importLogos, setImportLogos] = useState({});
+  const [importPreparando, setImportPreparando] = useState(false);
+  const [importAplicando, setImportAplicando] = useState(false);
+  const [importResumen, setImportResumen] = useState("");
+
   async function cargarRegistro() {
     setRegistroCargando(true);
     const { data } = await supabase
@@ -198,11 +209,82 @@ export default function App() {
     }
   }
 
+  // --- Importación masiva ---
+  async function handleImportJson(file) {
+    if (!file) return;
+    const texto = await file.text();
+    const data = JSON.parse(texto);
+    setImportPreparando(true);
+    const conMatch = [];
+    for (const entry of data) {
+      let candidatos = [];
+      if (entry.isin_detectado) {
+        const { data: exacto } = await supabase.from("fondos").select("isin, nombre").eq("isin", entry.isin_detectado);
+        candidatos = exacto || [];
+      }
+      if (candidatos.length === 0) {
+        const primeras = entry.nombre.split(" ").slice(0, 2).join(" ");
+        const { data: porNombre } = await supabase.from("fondos").select("isin, nombre").ilike("nombre", `%${primeras}%`).limit(6);
+        candidatos = porNombre || [];
+      }
+      conMatch.push({
+        ...entry,
+        candidatos,
+        isin_elegido: candidatos.length === 1 ? candidatos[0].isin : "",
+        omitir: candidatos.length === 0,
+      });
+    }
+    setImportEntradas(conMatch);
+    setImportPreparando(false);
+  }
+
+  function handleImportLogoFiles(fileList) {
+    const mapa = {};
+    for (const f of fileList) mapa[f.name] = f;
+    setImportLogos(mapa);
+  }
+
+  function actualizarImportEntrada(idx, campo, valor) {
+    setImportEntradas((prev) => prev.map((e, i) => i === idx ? { ...e, [campo]: valor } : e));
+  }
+
+  async function aplicarImportacion() {
+    setImportAplicando(true);
+    let aplicados = 0, saltados = 0, errores = 0;
+    for (const entry of importEntradas) {
+      if (entry.omitir || !entry.isin_elegido) { saltados++; continue; }
+      try {
+        let logo_url = undefined;
+        const nombreArchivo = entry.logo_file ? entry.logo_file.split("/").pop() : null;
+        const archivo = nombreArchivo ? importLogos[nombreArchivo] : null;
+        if (archivo) {
+          const ext = archivo.name.split(".").pop();
+          const path = `${entry.isin_elegido}.${ext}`;
+          await supabase.storage.from("logos-fondos").upload(path, archivo, { upsert: true });
+          const { data } = supabase.storage.from("logos-fondos").getPublicUrl(path);
+          logo_url = data.publicUrl;
+        }
+        const update = { descripcion: entry.descripcion || null, factsheet_url: entry.factsheet_url || null };
+        if (logo_url) update.logo_url = logo_url;
+        await supabase.from("fondos").update(update).eq("isin", entry.isin_elegido);
+        aplicados++;
+      } catch (e) {
+        errores++;
+      }
+    }
+    setImportResumen(`${aplicados} fondos actualizados, ${saltados} omitidos, ${errores} con error.`);
+    setImportAplicando(false);
+  }
+
   const currentSteps = tipo === "Revision" ? STEPS_REVISION : STEPS_PROPUESTA;
   const stepName = currentSteps[step];
 
+  // si se cambia el tipo de documento a mitad de camino, el paso actual
+  // puede dejar de existir en la lista nueva — volvemos al principio para
+  // no quedar en un paso inválido
   useEffect(() => { setStep(0); }, [tipo]);
 
+  // --- Búsqueda de asesor en Supabase (por repcode o nombre) ---
   useEffect(() => {
     if (asesorQuery.trim().length < 2) { setAsesorResultados([]); return; }
     const t = setTimeout(async () => {
@@ -216,6 +298,7 @@ export default function App() {
     return () => clearTimeout(t);
   }, [asesorQuery]);
 
+  // --- Búsqueda de fondos en Supabase (por ISIN o nombre) ---
   useEffect(() => {
     if (fondoQuery.trim().length < 2) { setFondoResultados([]); return; }
     const t = setTimeout(async () => {
@@ -239,10 +322,17 @@ export default function App() {
   async function toggleFavorito(idx) {
     const asset = proposedAssets[idx];
     const nuevoValor = !asset.uso_frecuente;
+    // se guarda en Supabase de una — la próxima vez que se busque este
+    // fondo (en esta propuesta o en cualquier otra) ya va a aparecer
+    // marcado como frecuente
     await supabase.from("fondos").update({ uso_frecuente: nuevoValor }).eq("isin", asset.isin);
     setProposedAssets((prev) => prev.map((a, i) => i === idx ? { ...a, uso_frecuente: nuevoValor } : a));
   }
 
+  // Agrega un activo que NO está en la biblioteca (una acción, un bono,
+  // cualquier cosa) — lo guarda en Supabase (upsert por ISIN) para que a
+  // partir de ahora quede buscable como cualquier otro fondo, y lo suma a
+  // esta propuesta.
   async function agregarActivoNuevo() {
     if (!nuevoActivoNombre.trim() || !nuevoActivoIsin.trim()) return;
     const nuevoFondo = { isin: nuevoActivoIsin.trim(), nombre: nuevoActivoNombre.trim(), uso_frecuente: false };
@@ -275,6 +365,9 @@ export default function App() {
     setEvolucionInputKey((k) => k + 1);
   }
 
+  // Importa el excel "Open Tax Lots" de StoneX para el portafolio actual de
+  // una Propuesta nueva (a diferencia de Revisión, acá solo hace falta
+  // nombre + importe — el % se calcula solo sobre el total).
   async function handleExcelImportPropuestaActual(file) {
     if (!file) return;
     const buf = await file.arrayBuffer();
@@ -293,6 +386,9 @@ export default function App() {
     setCurrentAssets((prev) => [...prev, ...nuevos]);
   }
 
+  // Importa el excel "Open Tax Lots" de StoneX (hoja "By Security") para el
+  // portafolio actual de Revisión — Symbol/ID, Description, Adjusted Cost y
+  // Mkt Value son exactamente lo que necesitamos.
   async function handleExcelImport(file) {
     if (!file) return;
     const buf = await file.arrayBuffer();
@@ -321,6 +417,9 @@ export default function App() {
     setCurrentAssets((prev) => [...prev, ...nuevos]);
   }
 
+  // rendimiento y % de portafolio para Revisión se calculan solos a partir
+  // de costo/valor actual — no hace falta que nadie los tipee ni se
+  // equivoque cargándolos a mano
   function activoConCalculos(a, totalValor) {
     const rendimiento = a.costo ? ((a.valor_actual - a.costo) / a.costo) * 100 : 0;
     const pct = totalValor ? (a.valor_actual / totalValor) * 100 : 0;
@@ -357,6 +456,7 @@ export default function App() {
       "Alternativos Líquidos": proposedAssets.filter((a) => a.categoria === "Alternativos Líquidos").map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "", logo_url: a.logo_url || "" })),
     };
 
+    // --- Revisión: los % y rendimiento salen solos de costo/valor actual ---
     const totalRevision = currentAssets.reduce((s, a) => s + (Number(a.valor_actual) || 0), 0) + Number(cashValorRevision || 0);
     const revisionAssets = currentAssets.map((a) => activoConCalculos({
       ...a,
@@ -373,6 +473,10 @@ export default function App() {
     return {
       cliente, nro_cuenta: nroCuenta,
       incluir_pagina2: incluirPagina2, incluir_valor: incluirValueProp,
+      // el template de Propuesta solo tiene 4 casilleros armados para el
+      // equipo (no incluye a Belén); el de Revisión sí tiene 5. Se recorta
+      // acá para no depender de que el usuario se acuerde de destildar a
+      // alguien.
       equipo: team.filter((m) => m.incluido).slice(0, 5).map((m) => ({ nombre: m.nombre, puesto: m.puesto, educacion: m.educacion })),
       perfil_riesgo: perfil,
       portafolio_actual: tipo === "Revision"
@@ -474,9 +578,61 @@ export default function App() {
       </div>
 
       {vista === "biblioteca" ? (
+        importModo ? (
+          <div style={{ padding: "28px 36px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <h3 style={{ color: NAVY, fontSize: 16, margin: 0 }}>Importar biblioteca masiva</h3>
+              <button onClick={() => setImportModo(false)} style={{ border: "none", background: "none", color: "#78776f", fontSize: 12.5, cursor: "pointer" }}>← Volver a la biblioteca</button>
+            </div>
+            <p style={{ fontSize: 12.5, color: "#78776f", marginBottom: 16 }}>Subí el JSON extraído y las imágenes de los logos. Matcheamos automático por ISIN o por nombre — revisá los casos dudosos antes de aplicar.</p>
+
+            <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
+              <Field label="Archivo JSON de extracción">
+                <input type="file" accept=".json" onChange={(e) => handleImportJson(e.target.files[0])} style={{ ...inputStyle, padding: "8px" }} />
+              </Field>
+              <Field label="Imágenes de logo (seleccioná todas juntas)">
+                <input type="file" accept="image/*" multiple onChange={(e) => handleImportLogoFiles(e.target.files)} style={{ ...inputStyle, padding: "8px" }} />
+              </Field>
+            </div>
+
+            {importPreparando && <div style={{ fontSize: 13, color: "#78776f" }}>Buscando coincidencias contra la biblioteca…</div>}
+
+            {importEntradas.length > 0 && !importPreparando && (
+              <>
+                <div style={{ fontSize: 12.5, marginBottom: 12, color: "#78776f" }}>
+                  {importEntradas.length} fondos leídos — {importEntradas.filter(e => e.candidatos.length === 1).length} con match automático, {importEntradas.filter(e => e.candidatos.length !== 1 && !e.omitir).length} para revisar.
+                </div>
+                <div style={{ maxHeight: 480, overflowY: "auto", background: "#fff", border: "1px solid #eae7dc", borderRadius: 8 }}>
+                  {importEntradas.map((entry, i) => (
+                    <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 10, padding: "10px 14px", borderBottom: "1px solid #eae7dc", alignItems: "center", opacity: entry.omitir ? 0.45 : 1 }}>
+                      <div>
+                        <div style={{ fontSize: 13 }}>{entry.nombre}</div>
+                        <div style={{ fontSize: 11, color: "#a5a399" }}>{entry.categoria_pptx} {entry.isin_detectado ? `· ISIN: ${entry.isin_detectado}` : ""}{entry.logo_file ? " · con logo" : " · sin logo"}</div>
+                      </div>
+                      <select style={miniInputStyle} value={entry.isin_elegido} onChange={(e) => actualizarImportEntrada(i, "isin_elegido", e.target.value)}>
+                        <option value="">— sin match —</option>
+                        {entry.candidatos.map((c) => <option key={c.isin} value={c.isin}>{c.isin} — {c.nombre}</option>)}
+                      </select>
+                      <label style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 4 }}>
+                        <input type="checkbox" checked={entry.omitir} onChange={(e) => actualizarImportEntrada(i, "omitir", e.target.checked)} /> Omitir
+                      </label>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={aplicarImportacion} disabled={importAplicando} style={{ marginTop: 16, padding: "10px 20px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontWeight: 600, cursor: "pointer" }}>
+                  {importAplicando ? "Aplicando…" : "Aplicar importación"}
+                </button>
+                {importResumen && <div style={{ marginTop: 10, fontSize: 13, color: "#3a7d44" }}>✓ {importResumen}</div>}
+              </>
+            )}
+          </div>
+        ) : (
         <div style={{ padding: "28px 36px", display: "flex", gap: 24 }}>
           <div style={{ width: 360 }}>
-            <h3 style={{ color: NAVY, fontSize: 16, marginBottom: 8 }}>Biblioteca de fondos</h3>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h3 style={{ color: NAVY, fontSize: 16, marginBottom: 8 }}>Biblioteca de fondos</h3>
+              <button onClick={() => setImportModo(true)} style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>Importar masivo</button>
+            </div>
             <p style={{ fontSize: 12.5, color: "#78776f", marginBottom: 14 }}>Buscá un fondo para cargarle logo, descripción y factsheet — queda guardado para todas las próximas propuestas, no hay que repetirlo.</p>
             <input style={inputStyle} value={bibliotecaQuery} onChange={(e) => setBibliotecaQuery(e.target.value)} placeholder="Buscar por ISIN o nombre" />
             <div style={{ marginTop: 10, maxHeight: 480, overflowY: "auto" }}>
@@ -512,6 +668,7 @@ export default function App() {
             </div>
           )}
         </div>
+        )
       ) : vista === "registro" ? (
         <div style={{ padding: "28px 36px" }}>
           <h3 style={{ color: NAVY, fontSize: 16, marginBottom: 16 }}>Registro de propuestas</h3>
