@@ -170,7 +170,7 @@ export default function App() {
     return {
       cliente, nro_cuenta: nroCuenta,
       incluir_pagina2: incluirPagina2, incluir_valor: incluirValueProp,
-      team.filter((m) => m.incluido).slice(0, tipo === "Propuesta" ? 4 : 5).map((m) => ({ nombre: m.nombre, puesto: m.puesto, educacion: m.educacion })),
+      equipo: team.filter((m) => m.incluido).slice(0, tipo === "Propuesta" ? 4 : 5).map((m) => ({ nombre: m.nombre, puesto: m.puesto, educacion: m.educacion })),
       perfil_riesgo: perfil,
       portafolio_actual: currentAssets.map((a) => ({ nombre: a.nombre, pct: a.pct, importe: a.importe })),
       categorias_propuesto: categorias,
