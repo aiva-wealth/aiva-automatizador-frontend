@@ -110,6 +110,9 @@ export default function App() {
   const [fondoResultados, setFondoResultados] = useState([]);
   const [proposedAssets, setProposedAssets] = useState([]);
   const [cashManualPropuesta, setCashManualPropuesta] = useState(0);
+  const [cashActualPropuesta, setCashActualPropuesta] = useState(0);
+  const [nuevoActivoNombre, setNuevoActivoNombre] = useState("");
+  const [nuevoActivoIsin, setNuevoActivoIsin] = useState("");
   const [comentarios, setComentarios] = useState("");
 
   const [evolucionFileName, setEvolucionFileName] = useState("");
@@ -173,6 +176,19 @@ export default function App() {
     setProposedAssets((prev) => prev.map((a, i) => i === idx ? { ...a, uso_frecuente: nuevoValor } : a));
   }
 
+  // Agrega un activo que NO está en la biblioteca (una acción, un bono,
+  // cualquier cosa) — lo guarda en Supabase (upsert por ISIN) para que a
+  // partir de ahora quede buscable como cualquier otro fondo, y lo suma a
+  // esta propuesta.
+  async function agregarActivoNuevo() {
+    if (!nuevoActivoNombre.trim() || !nuevoActivoIsin.trim()) return;
+    const nuevoFondo = { isin: nuevoActivoIsin.trim(), nombre: nuevoActivoNombre.trim(), uso_frecuente: false };
+    await supabase.from("fondos").upsert(nuevoFondo, { onConflict: "isin" });
+    addProposedAsset(nuevoFondo);
+    setNuevoActivoNombre("");
+    setNuevoActivoIsin("");
+  }
+
   function updateProposedField(idx, field, value) {
     setProposedAssets((prev) => prev.map((a, i) => {
       if (i !== idx) return a;
@@ -196,9 +212,30 @@ export default function App() {
     setEvolucionInputKey((k) => k + 1);
   }
 
-  // Importa el excel "Open Tax Lots" de StoneX (hoja "By Security") y arma
-  // las filas de portafolio actual solas — Symbol/ID, Description,
-  // Adjusted Cost y Mkt Value son exactamente lo que necesitamos.
+  // Importa el excel "Open Tax Lots" de StoneX para el portafolio actual de
+  // una Propuesta nueva (a diferencia de Revisión, acá solo hace falta
+  // nombre + importe — el % se calcula solo sobre el total).
+  async function handleExcelImportPropuestaActual(file) {
+    if (!file) return;
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: "array" });
+    const sheetName = wb.SheetNames.includes("By Security") ? "By Security" : wb.SheetNames[0];
+    const ws = wb.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
+    const nuevos = rows
+      .map((r) => {
+        const cantidad = Number(r["Quantity"]) || 0;
+        const usdPrice = Number(r["USD Price"]) || 0;
+        const importe = Math.round(Number(r["Mkt Value"]) || (usdPrice * cantidad) || 0);
+        return { nombre: r["Description"] || "", importe };
+      })
+      .filter((a) => a.nombre);
+    setCurrentAssets((prev) => [...prev, ...nuevos]);
+  }
+
+  // Importa el excel "Open Tax Lots" de StoneX (hoja "By Security") para el
+  // portafolio actual de Revisión — Symbol/ID, Description, Adjusted Cost y
+  // Mkt Value son exactamente lo que necesitamos.
   async function handleExcelImport(file) {
     if (!file) return;
     const buf = await file.arrayBuffer();
@@ -287,7 +324,18 @@ export default function App() {
       perfil_riesgo: perfil,
       portafolio_actual: tipo === "Revision"
         ? revisionAssets.map((a) => ({ isin: a.isin, nombre: a.nombre, pct: a.pct, costo: a.costo, valor_actual: a.valor_actual, rendimiento: a.rendimiento }))
-        : currentAssets.map((a) => ({ nombre: a.nombre, pct: a.pct, importe: a.importe })),
+        : (() => {
+            const total = currentAssets.reduce((s, a) => s + (Number(a.importe) || 0), 0) + (Number(cashActualPropuesta) || 0);
+            const filas = currentAssets.map((a) => ({
+              nombre: a.nombre,
+              importe: Math.round(Number(a.importe) || 0),
+              pct: total ? Math.round((Number(a.importe) || 0) / total * 100) : 0,
+            }));
+            if (cashActualPropuesta) {
+              filas.push({ nombre: "Cash", importe: Math.round(Number(cashActualPropuesta)), pct: total ? Math.round(Number(cashActualPropuesta) / total * 100) : 0 });
+            }
+            return filas;
+          })(),
       cash_valor: Number(cashValorRevision || 0),
       columnas_visibles: ["pct", "isin", "nombre", "costo", "valor_actual", "rendimiento"],
       asset_allocation: assetAllocationRevision,
@@ -542,21 +590,34 @@ export default function App() {
           )}
 
           {stepName === "Portafolio actual" && tipo === "Propuesta" && (
-            <Section title="Portafolio actual">
-              <button onClick={() => setCurrentAssets((prev) => [...prev, { nombre: "", pct: 0, importe: 0 }])} style={{ marginBottom: 12, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar activo</button>
-              {currentAssets.map((a, i) => (
-                <div key={i} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 10, marginBottom: 8 }}>
-                  <MiniField label="Nombre">
-                    <input style={miniInputStyle} value={a.nombre} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, nombre: e.target.value } : x))} />
-                  </MiniField>
-                  <MiniField label="%">
-                    <input style={miniInputStyle} type="number" value={a.pct} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, pct: +e.target.value } : x))} />
-                  </MiniField>
-                  <MiniField label="Importe USD">
-                    <input style={miniInputStyle} type="number" value={a.importe} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, importe: +e.target.value } : x))} />
-                  </MiniField>
-                </div>
-              ))}
+            <Section title="Portafolio actual" subtitle="El % se calcula solo sobre el total (activos + cash) — no hace falta tipearlo.">
+              <Field label="Cash (USD)" hint="StoneX no incluye el efectivo en el excel de posiciones — hay que cargarlo aparte.">
+                <input type="number" style={{ ...inputStyle, maxWidth: 220 }} value={cashActualPropuesta} onChange={(e) => setCashActualPropuesta(+e.target.value)} />
+              </Field>
+              <Field label="Importar desde Excel (Open Tax Lots de StoneX)" hint="Toma Description y Mkt Value de la hoja 'By Security' y agrega una fila por activo.">
+                <input type="file" accept=".xlsx,.xls" onChange={(e) => handleExcelImportPropuestaActual(e.target.files[0])} style={{ ...inputStyle, padding: "8px" }} />
+              </Field>
+              <button onClick={() => setCurrentAssets((prev) => [...prev, { nombre: "", importe: 0 }])} style={{ marginBottom: 12, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar activo a mano</button>
+              {(() => {
+                const total = currentAssets.reduce((s, a) => s + (Number(a.importe) || 0), 0) + (Number(cashActualPropuesta) || 0);
+                return currentAssets.map((a, i) => {
+                  const pct = total ? Math.round((Number(a.importe) || 0) / total * 100) : 0;
+                  return (
+                    <div key={i} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr auto", gap: 10, marginBottom: 8, alignItems: "end" }}>
+                      <MiniField label="Nombre">
+                        <input style={miniInputStyle} value={a.nombre} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, nombre: e.target.value } : x))} />
+                      </MiniField>
+                      <MiniField label="% (calculado)">
+                        <div style={{ ...miniInputStyle, background: CREAM, fontWeight: 600 }}>{pct}%</div>
+                      </MiniField>
+                      <MiniField label="Importe USD">
+                        <input style={miniInputStyle} type="number" value={a.importe} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, importe: +e.target.value } : x))} />
+                      </MiniField>
+                      <button onClick={() => setCurrentAssets((prev) => prev.filter((_, j) => j !== i))} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer" }}>Quitar</button>
+                    </div>
+                  );
+                });
+              })()}
             </Section>
           )}
 
@@ -580,6 +641,15 @@ export default function App() {
                   ))}
                 </div>
               )}
+
+              <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 12, marginBottom: 18 }}>
+                <div style={{ fontSize: 12, color: "#78776f", marginBottom: 8 }}>¿No está en la biblioteca? Puede ser cualquier cosa — una acción, un bono, una alternativa. Se agrega acá y queda guardado para la próxima vez.</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8 }}>
+                  <input style={miniInputStyle} placeholder="Nombre (ej: Apple Inc / AAPL)" value={nuevoActivoNombre} onChange={(e) => setNuevoActivoNombre(e.target.value)} />
+                  <input style={miniInputStyle} placeholder="ISIN / Ticker" value={nuevoActivoIsin} onChange={(e) => setNuevoActivoIsin(e.target.value)} />
+                  <button onClick={agregarActivoNuevo} style={{ padding: "0 16px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12.5, cursor: "pointer" }}>Agregar</button>
+                </div>
+              </div>
 
               {(() => {
                 const sumaFondos = proposedAssets.reduce((s, a) => s + (Number(a.monto) || 0), 0);
