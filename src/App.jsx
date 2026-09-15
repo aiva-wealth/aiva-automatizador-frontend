@@ -82,6 +82,7 @@ export default function App() {
   const [perfil, setPerfil] = useState("Balanceado");
 
   const [currentAssets, setCurrentAssets] = useState([]);
+  const [cashValorRevision, setCashValorRevision] = useState(0);
   const [montoInvertir, setMontoInvertir] = useState(500000);
   const [fondoQuery, setFondoQuery] = useState("");
   const [fondoResultados, setFondoResultados] = useState([]);
@@ -170,9 +171,23 @@ export default function App() {
     return {
       cliente, nro_cuenta: nroCuenta,
       incluir_pagina2: incluirPagina2, incluir_valor: incluirValueProp,
+      // el template de Propuesta solo tiene 4 casilleros armados para el
+      // equipo (no incluye a Belén); el de Revisión sí tiene 5. Se recorta
+      // acá para no depender de que el usuario se acuerde de destildar a
+      // alguien.
       equipo: team.filter((m) => m.incluido).slice(0, tipo === "Propuesta" ? 4 : 5).map((m) => ({ nombre: m.nombre, puesto: m.puesto, educacion: m.educacion })),
       perfil_riesgo: perfil,
-      portafolio_actual: currentAssets.map((a) => ({ nombre: a.nombre, pct: a.pct, importe: a.importe })),
+      portafolio_actual: tipo === "Revision"
+        ? currentAssets.map((a) => ({ isin: a.isin, nombre: a.nombre, pct: a.pct, costo: a.costo, valor_actual: a.valor_actual, rendimiento: a.rendimiento }))
+        : currentAssets.map((a) => ({ nombre: a.nombre, pct: a.pct, importe: a.importe })),
+      cash_valor: cashValorRevision,
+      columnas_visibles: ["pct", "isin", "nombre", "costo", "valor_actual", "rendimiento"],
+      asset_allocation: (() => {
+        const total = currentAssets.reduce((s, a) => s + (a.valor_actual || 0), 0) + cashValorRevision;
+        const rf = currentAssets.filter((a) => a.categoria === "Renta Fija").reduce((s, a) => s + (a.valor_actual || 0), 0);
+        const rv = currentAssets.filter((a) => a.categoria === "Renta Variable").reduce((s, a) => s + (a.valor_actual || 0), 0);
+        return total ? { "Renta Fija": rf / total, "Renta Variable": rv / total, "Cash": cashValorRevision / total } : { "Renta Fija": 0, "Renta Variable": 0, "Cash": 0 };
+      })(),
       categorias_propuesto: categorias,
       cash_monto: cashMonto,
       monto_total: montoInvertir,
@@ -320,12 +335,36 @@ export default function App() {
 
           {step === 4 && (
             <Section title="Portafolio actual">
-              <button onClick={() => setCurrentAssets((prev) => [...prev, { nombre: "", pct: 0, importe: 0 }])} style={{ marginBottom: 12, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar activo</button>
+              <button onClick={() => setCurrentAssets((prev) => [...prev, tipo === "Revision" ? { isin: "", nombre: "", categoria: "Renta Variable", pct: 0, costo: 0, valor_actual: 0, rendimiento: 0 } : { nombre: "", pct: 0, importe: 0 }])} style={{ marginBottom: 12, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar activo</button>
+
+              {tipo === "Revision" && (
+                <Field label="Cash / equivalentes (USD)">
+                  <input type="number" style={{ ...inputStyle, maxWidth: 220 }} value={cashValorRevision} onChange={(e) => setCashValorRevision(+e.target.value)} />
+                </Field>
+              )}
+
               {currentAssets.map((a, i) => (
                 <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6 }}>
-                  <input style={{ ...inputStyle, flex: 2 }} placeholder="Nombre" value={a.nombre} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, nombre: e.target.value } : x))} />
-                  <input style={{ ...inputStyle, width: 70 }} type="number" placeholder="%" value={a.pct} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, pct: +e.target.value } : x))} />
-                  <input style={{ ...inputStyle, width: 120 }} type="number" placeholder="Importe" value={a.importe} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, importe: +e.target.value } : x))} />
+                  {tipo === "Revision" ? (
+                    <>
+                      <input style={{ ...inputStyle, width: 130 }} placeholder="ISIN" value={a.isin} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, isin: e.target.value } : x))} />
+                      <input style={{ ...inputStyle, flex: 2 }} placeholder="Nombre" value={a.nombre} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, nombre: e.target.value } : x))} />
+                      <select style={{ ...inputStyle, width: 130 }} value={a.categoria} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, categoria: e.target.value } : x))}>
+                        <option value="Renta Fija">Renta Fija</option>
+                        <option value="Renta Variable">Renta Variable</option>
+                      </select>
+                      <input style={{ ...inputStyle, width: 60 }} type="number" placeholder="%" value={a.pct} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, pct: +e.target.value } : x))} />
+                      <input style={{ ...inputStyle, width: 100 }} type="number" placeholder="Costo" value={a.costo} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, costo: +e.target.value } : x))} />
+                      <input style={{ ...inputStyle, width: 100 }} type="number" placeholder="Valor actual" value={a.valor_actual} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, valor_actual: +e.target.value } : x))} />
+                      <input style={{ ...inputStyle, width: 80 }} type="number" placeholder="Rend. %" value={a.rendimiento} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, rendimiento: +e.target.value } : x))} />
+                    </>
+                  ) : (
+                    <>
+                      <input style={{ ...inputStyle, flex: 2 }} placeholder="Nombre" value={a.nombre} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, nombre: e.target.value } : x))} />
+                      <input style={{ ...inputStyle, width: 70 }} type="number" placeholder="%" value={a.pct} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, pct: +e.target.value } : x))} />
+                      <input style={{ ...inputStyle, width: 120 }} type="number" placeholder="Importe" value={a.importe} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, importe: +e.target.value } : x))} />
+                    </>
+                  )}
                 </div>
               ))}
             </Section>
