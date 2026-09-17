@@ -189,10 +189,13 @@ export default function App() {
   const [marcaFondoResultados, setMarcaFondoResultados] = useState([]);
   const [marcaFondoAsignada, setMarcaFondoAsignada] = useState(""); // nombre de la marca recién elegida, solo para mostrar feedback
 
-  // --- Asociación en bloque: parado en una marca, buscar fondos por ISIN o
-  // nombre y tildar varios de una — al guardar, se les asigna el logo_url
-  // de esa marca a todos juntos en un solo update. Así "iShares" se asocia
-  // a los 40 fondos de iShares de una sola vez en vez de uno por uno.
+  // --- Importación de marcas en bloque: subir varios archivos de logo de
+  // una — el nombre de marca sale del propio nombre de archivo (limpiando
+  // el número/guiones que le puso el ZIP que armamos), editable antes de
+  // aplicar por si hay que corregir alguno.
+  const [marcaImportEntradas, setMarcaImportEntradas] = useState([]); // [{file, nombre}]
+  const [marcaImportAplicando, setMarcaImportAplicando] = useState(false);
+  const [marcaImportResumen, setMarcaImportResumen] = useState("");
   const [marcaAsocExpandidaId, setMarcaAsocExpandidaId] = useState(null);
   const [marcaAsocQuery, setMarcaAsocQuery] = useState("");
   const [marcaAsocResultados, setMarcaAsocResultados] = useState([]);
@@ -445,6 +448,50 @@ export default function App() {
   function cantidadFondosConLogo(logo_url) {
     const grupo = logosGrupos.find((g) => g.logo_url === logo_url);
     return grupo ? grupo.fondos.length : 0;
+  }
+
+  // --- Importación de marcas en bloque ---
+  function handleMarcaImportFiles(fileList) {
+    const entradas = Array.from(fileList).map((file) => {
+      let nombre = file.name.replace(/\.[^.]+$/, ""); // sacar extensión
+      nombre = nombre.replace(/^\d+[_\-\s]*/, ""); // sacar el número inicial (ej: "07_")
+      nombre = nombre.replace(/[_\-]+/g, " ").trim(); // guiones/underscores -> espacios
+      return { file, nombre };
+    });
+    setMarcaImportEntradas(entradas);
+    setMarcaImportResumen("");
+  }
+
+  function actualizarMarcaImportNombre(idx, valor) {
+    setMarcaImportEntradas((prev) => prev.map((e, i) => i === idx ? { ...e, nombre: valor } : e));
+  }
+
+  function quitarMarcaImportEntrada(idx) {
+    setMarcaImportEntradas((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  async function aplicarImportMarcas() {
+    setMarcaImportAplicando(true);
+    let aplicados = 0, errores = 0;
+    for (let i = 0; i < marcaImportEntradas.length; i++) {
+      const { file, nombre } = marcaImportEntradas[i];
+      if (!nombre.trim()) continue;
+      try {
+        const ext = file.name.split(".").pop();
+        const path = `marcas/${slugify(nombre)}-${Date.now()}-${i}.${ext}`;
+        const { error: uploadError } = await supabase.storage.from("logos-fondos").upload(path, file, { upsert: true });
+        if (uploadError) throw uploadError;
+        const { data } = supabase.storage.from("logos-fondos").getPublicUrl(path);
+        await supabase.from("marcas_logo").insert({ nombre: nombre.trim(), logo_url: data.publicUrl });
+        aplicados++;
+      } catch (e) {
+        errores++;
+      }
+    }
+    setMarcaImportResumen(`✓ ${aplicados} marca(s) cargada(s)${errores ? `, ${errores} con error` : ""}.`);
+    setMarcaImportEntradas([]);
+    await cargarTodasLasMarcas();
+    setMarcaImportAplicando(false);
   }
 
   // --- Importación masiva ---
@@ -967,6 +1014,30 @@ export default function App() {
                 </button>
               </div>
               {marcaMensajeNueva && <div style={{ marginTop: 8, fontSize: 12, color: marcaMensajeNueva.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{marcaMensajeNueva}</div>}
+            </div>
+
+            <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 14, marginBottom: 22, maxWidth: 640 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: NAVY, marginBottom: 8 }}>Importar varias marcas a la vez</div>
+              <div style={{ fontSize: 11.5, color: "#78776f", marginBottom: 10 }}>Descomprimí el ZIP en una carpeta y seleccioná todas las imágenes juntas — el nombre de cada marca sale del nombre del archivo (editable antes de aplicar).</div>
+              <input type="file" accept="image/*" multiple onChange={(e) => handleMarcaImportFiles(e.target.files)} style={{ ...inputStyle, padding: "8px", marginBottom: 12 }} />
+
+              {marcaImportEntradas.length > 0 && (
+                <>
+                  <div style={{ maxHeight: 320, overflowY: "auto", border: "1px solid #eae7dc", borderRadius: 6, marginBottom: 12 }}>
+                    {marcaImportEntradas.map((e, i) => (
+                      <div key={i} style={{ display: "grid", gridTemplateColumns: "40px 1fr auto", gap: 10, alignItems: "center", padding: "8px 10px", borderBottom: "1px solid #f2f0e9" }}>
+                        <img src={URL.createObjectURL(e.file)} alt="" style={{ height: 28, maxWidth: 40, objectFit: "contain" }} />
+                        <input style={miniInputStyle} value={e.nombre} onChange={(ev) => actualizarMarcaImportNombre(i, ev.target.value)} placeholder="Nombre de la marca" />
+                        <button onClick={() => quitarMarcaImportEntrada(i)} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer" }}>Quitar</button>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={aplicarImportMarcas} disabled={marcaImportAplicando} style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12.5, cursor: "pointer" }}>
+                    {marcaImportAplicando ? "Aplicando…" : `Aplicar (${marcaImportEntradas.length} marca${marcaImportEntradas.length === 1 ? "" : "s"})`}
+                  </button>
+                </>
+              )}
+              {marcaImportResumen && <div style={{ marginTop: 8, fontSize: 12, color: "#3a7d44" }}>{marcaImportResumen}</div>}
             </div>
 
             {marcasTodas.length > 0 && (
