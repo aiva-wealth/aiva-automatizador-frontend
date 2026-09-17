@@ -341,13 +341,17 @@ export default function App() {
       const { error: uploadError } = await supabase.storage.from("logos-fondos").upload(path, marcaArchivoNuevo, { upsert: true });
       if (uploadError) throw uploadError;
       const { data } = supabase.storage.from("logos-fondos").getPublicUrl(path);
-      await supabase.from("marcas_logo").insert({ nombre: marcaNombreNuevo.trim(), logo_url: data.publicUrl });
+      // OJO: supabase-js NO tira excepción si el insert falla (por RLS, por
+      // ejemplo) — hay que revisar el campo "error" del resultado a mano,
+      // si no el código sigue de largo creyendo que se guardó bien.
+      const { error: insertError } = await supabase.from("marcas_logo").insert({ nombre: marcaNombreNuevo.trim(), logo_url: data.publicUrl });
+      if (insertError) throw insertError;
       setMarcaMensajeNueva(`✓ Marca "${marcaNombreNuevo.trim()}" guardada — ya se puede buscar al editar cualquier fondo.`);
       setMarcaNombreNuevo("");
       setMarcaArchivoNuevo(null);
       cargarTodasLasMarcas();
     } catch (e) {
-      setMarcaMensajeNueva("Error al guardar: " + (e.message || e));
+      setMarcaMensajeNueva("Error al guardar: " + (e.message || JSON.stringify(e)));
     } finally {
       setMarcaGuardandoNueva(false);
     }
@@ -361,9 +365,12 @@ export default function App() {
     if (!nombre) return;
     setMarcaGuardandoGrupo(logo_url);
     try {
-      await supabase.from("marcas_logo").insert({ nombre, logo_url });
+      const { error: insertError } = await supabase.from("marcas_logo").insert({ nombre, logo_url });
+      if (insertError) throw insertError;
       await cargarTodasLasMarcas();
       setMarcaNombrePorGrupo((prev) => ({ ...prev, [logo_url]: "" }));
+    } catch (e) {
+      alert("Error al guardar la marca: " + (e.message || JSON.stringify(e)));
     } finally {
       setMarcaGuardandoGrupo("");
     }
@@ -472,7 +479,7 @@ export default function App() {
 
   async function aplicarImportMarcas() {
     setMarcaImportAplicando(true);
-    let aplicados = 0, errores = 0;
+    let aplicados = 0, errores = 0, primerError = "";
     for (let i = 0; i < marcaImportEntradas.length; i++) {
       const { file, nombre } = marcaImportEntradas[i];
       if (!nombre.trim()) continue;
@@ -482,13 +489,21 @@ export default function App() {
         const { error: uploadError } = await supabase.storage.from("logos-fondos").upload(path, file, { upsert: true });
         if (uploadError) throw uploadError;
         const { data } = supabase.storage.from("logos-fondos").getPublicUrl(path);
-        await supabase.from("marcas_logo").insert({ nombre: nombre.trim(), logo_url: data.publicUrl });
+        // OJO: supabase-js NO tira excepción si el insert falla — hay que
+        // revisar "error" del resultado a mano, si no el conteo de
+        // "aplicados" queda mintiendo aunque no se haya guardado nada.
+        const { error: insertError } = await supabase.from("marcas_logo").insert({ nombre: nombre.trim(), logo_url: data.publicUrl });
+        if (insertError) throw insertError;
         aplicados++;
       } catch (e) {
         errores++;
+        if (!primerError) primerError = e.message || JSON.stringify(e);
       }
     }
-    setMarcaImportResumen(`✓ ${aplicados} marca(s) cargada(s)${errores ? `, ${errores} con error` : ""}.`);
+    setMarcaImportResumen(
+      `✓ ${aplicados} marca(s) cargada(s)${errores ? `, ${errores} con error` : ""}.` +
+      (primerError ? ` Primer error: ${primerError}` : "")
+    );
     setMarcaImportEntradas([]);
     await cargarTodasLasMarcas();
     setMarcaImportAplicando(false);
