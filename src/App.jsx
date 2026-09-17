@@ -87,6 +87,17 @@ function fileToBase64(file) {
   });
 }
 
+// Nombre de archivo simple y estable a partir del nombre de marca (para el
+// storage) — no necesita ser bonito, solo único y sin caracteres raros.
+function slugify(texto) {
+  return texto
+    .toString()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "") || "marca";
+}
+
 export default function App() {
   const [usuario, setUsuario] = useState("");
   const [repcode, setRepcode] = useState("");
@@ -160,6 +171,24 @@ export default function App() {
   const [logosGrupos, setLogosGrupos] = useState([]);
   const [logosQuery, setLogosQuery] = useState("");
 
+  // --- Marcas de logo: biblioteca de logos reutilizables, independiente de
+  // los fondos. Se buscan por nombre (ej: "MFS", "BlackRock") y se asignan
+  // a cualquier fondo sin volver a subir el archivo — así un mismo logo
+  // real nunca queda duplicado en el storage, y cargar un logo que falta
+  // no depende de tener un fondo puntual a mano primero.
+  const [marcaNombreNuevo, setMarcaNombreNuevo] = useState("");
+  const [marcaArchivoNuevo, setMarcaArchivoNuevo] = useState(null);
+  const [marcaGuardandoNueva, setMarcaGuardandoNueva] = useState(false);
+  const [marcaMensajeNueva, setMarcaMensajeNueva] = useState("");
+  const [marcasTodas, setMarcasTodas] = useState([]);
+  const [marcaNombrePorGrupo, setMarcaNombrePorGrupo] = useState({}); // logo_url -> texto que se está tipeando
+  const [marcaGuardandoGrupo, setMarcaGuardandoGrupo] = useState(""); // logo_url en proceso de guardarse
+
+  // buscador de marca dentro del editor de un fondo puntual
+  const [marcaFondoQuery, setMarcaFondoQuery] = useState("");
+  const [marcaFondoResultados, setMarcaFondoResultados] = useState([]);
+  const [marcaFondoAsignada, setMarcaFondoAsignada] = useState(""); // nombre de la marca recién elegida, solo para mostrar feedback
+
   async function cargarRegistro() {
     setRegistroCargando(true);
     const { data } = await supabase
@@ -198,6 +227,9 @@ export default function App() {
     setBibliotecaSel({ ...f });
     setBibliotecaLogoFile(null);
     setBibliotecaMensaje("");
+    setMarcaFondoQuery("");
+    setMarcaFondoResultados([]);
+    setMarcaFondoAsignada("");
   }
 
   async function guardarFondoBiblioteca() {
@@ -253,7 +285,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (vista === "biblioteca" && logosVista) cargarAuditoriaLogos();
+    if (vista === "biblioteca" && logosVista) { cargarAuditoriaLogos(); cargarTodasLasMarcas(); }
   }, [vista, logosVista]);
 
   const logosGruposFiltrados = logosQuery.trim().length < 2
@@ -261,6 +293,82 @@ export default function App() {
     : logosGrupos.filter((g) => g.fondos.some((f) =>
         f.nombre.toLowerCase().includes(logosQuery.toLowerCase()) || f.isin.toLowerCase().includes(logosQuery.toLowerCase())
       ));
+
+  // trae todas las marcas ya registradas, para saber qué grupos de la
+  // auditoría ya tienen nombre asignado (y no mostrarles el formulario de
+  // "ponerle nombre" de nuevo)
+  async function cargarTodasLasMarcas() {
+    const { data } = await supabase.from("marcas_logo").select("id, nombre, logo_url").order("nombre");
+    setMarcasTodas(data || []);
+  }
+
+  const marcaPorLogoUrl = (logo_url) => marcasTodas.find((m) => m.logo_url === logo_url);
+
+  // Sube un logo COMPLETAMENTE NUEVO (de una marca que ningún fondo tiene
+  // todavía) y lo registra en marcas_logo con un nombre buscable — así se
+  // puede dejar cargado de antemano un logo que "falta" sin necesitar un
+  // fondo puntual a mano.
+  async function crearMarcaNueva() {
+    if (!marcaNombreNuevo.trim() || !marcaArchivoNuevo) {
+      setMarcaMensajeNueva("Completá el nombre y elegí un archivo de imagen.");
+      return;
+    }
+    setMarcaGuardandoNueva(true);
+    setMarcaMensajeNueva("");
+    try {
+      const ext = marcaArchivoNuevo.name.split(".").pop();
+      const path = `marcas/${slugify(marcaNombreNuevo)}-${Date.now()}.${ext}`;
+      const { error: uploadError } = await supabase.storage.from("logos-fondos").upload(path, marcaArchivoNuevo, { upsert: true });
+      if (uploadError) throw uploadError;
+      const { data } = supabase.storage.from("logos-fondos").getPublicUrl(path);
+      await supabase.from("marcas_logo").insert({ nombre: marcaNombreNuevo.trim(), logo_url: data.publicUrl });
+      setMarcaMensajeNueva(`✓ Marca "${marcaNombreNuevo.trim()}" guardada — ya se puede buscar al editar cualquier fondo.`);
+      setMarcaNombreNuevo("");
+      setMarcaArchivoNuevo(null);
+      cargarTodasLasMarcas();
+    } catch (e) {
+      setMarcaMensajeNueva("Error al guardar: " + (e.message || e));
+    } finally {
+      setMarcaGuardandoNueva(false);
+    }
+  }
+
+  // Bautiza un logo que YA existe (uno de los grupos de la auditoría) como
+  // una marca buscable — reutiliza la misma URL, no sube nada de nuevo, así
+  // que nunca duplica el archivo en el storage.
+  async function guardarGrupoComoMarca(logo_url) {
+    const nombre = (marcaNombrePorGrupo[logo_url] || "").trim();
+    if (!nombre) return;
+    setMarcaGuardandoGrupo(logo_url);
+    try {
+      await supabase.from("marcas_logo").insert({ nombre, logo_url });
+      await cargarTodasLasMarcas();
+      setMarcaNombrePorGrupo((prev) => ({ ...prev, [logo_url]: "" }));
+    } finally {
+      setMarcaGuardandoGrupo("");
+    }
+  }
+
+  // --- Buscador de marca dentro del editor de un fondo (Biblioteca) ---
+  useEffect(() => {
+    if (marcaFondoQuery.trim().length < 2) { setMarcaFondoResultados([]); return; }
+    const t = setTimeout(async () => {
+      const { data } = await supabase.from("marcas_logo").select("id, nombre, logo_url").ilike("nombre", `%${marcaFondoQuery}%`).limit(10);
+      setMarcaFondoResultados(data || []);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [marcaFondoQuery]);
+
+  // Asigna el logo de una marca elegida al fondo que se está editando —
+  // solo en memoria; hay que apretar "Guardar" para que quede en Supabase,
+  // igual que con cualquier otro cambio del formulario.
+  function asignarMarcaAFondo(marca) {
+    setBibliotecaSel((prev) => ({ ...prev, logo_url: marca.logo_url }));
+    setBibliotecaLogoFile(null);
+    setMarcaFondoAsignada(marca.nombre);
+    setMarcaFondoQuery("");
+    setMarcaFondoResultados([]);
+  }
 
   // --- Importación masiva ---
   async function handleImportJson(file) {
@@ -786,6 +894,23 @@ export default function App() {
               Agrupa todos los fondos por su logo real. Un grupo con un solo fondo es lo normal. Un grupo con varios fondos que no son de la misma familia (como pasó con Calamos y Morgan Stanley) suele ser un error de carga — el logo de uno quedó pegado en el otro.
             </p>
 
+            <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 14, marginBottom: 22, maxWidth: 520 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: NAVY, marginBottom: 8 }}>Agregar un logo de marca que todavía no está cargado</div>
+              <div style={{ fontSize: 11.5, color: "#78776f", marginBottom: 10 }}>Para logos que ningún fondo tiene todavía (ej: uno que se perdió en la importación). Después se busca por este nombre al editar cualquier fondo.</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, alignItems: "end" }}>
+                <MiniField label="Nombre de la marca">
+                  <input style={miniInputStyle} value={marcaNombreNuevo} onChange={(e) => setMarcaNombreNuevo(e.target.value)} placeholder="Ej: MFS" />
+                </MiniField>
+                <MiniField label="Imagen del logo">
+                  <input type="file" accept="image/*" onChange={(e) => setMarcaArchivoNuevo(e.target.files[0])} style={{ ...miniInputStyle, padding: "6px" }} />
+                </MiniField>
+                <button onClick={crearMarcaNueva} disabled={marcaGuardandoNueva} style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12.5, cursor: "pointer" }}>
+                  {marcaGuardandoNueva ? "Guardando…" : "Guardar"}
+                </button>
+              </div>
+              {marcaMensajeNueva && <div style={{ marginTop: 8, fontSize: 12, color: marcaMensajeNueva.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{marcaMensajeNueva}</div>}
+            </div>
+
             <input style={{ ...inputStyle, maxWidth: 360, marginBottom: 18 }} value={logosQuery} onChange={(e) => setLogosQuery(e.target.value)} placeholder="Filtrar por ISIN o nombre de fondo" />
 
             {logosCargando && <div style={{ fontSize: 13, color: "#78776f" }}>Cargando…</div>}
@@ -811,6 +936,27 @@ export default function App() {
                       <b>{f.isin}</b> — {f.nombre}
                     </div>
                   ))}
+                  {marcaPorLogoUrl(g.logo_url) ? (
+                    <div style={{ fontSize: 11, color: TEAL, marginTop: 8, borderTop: "1px solid #f2f0e9", paddingTop: 8 }}>
+                      ✓ Ya buscable como marca "{marcaPorLogoUrl(g.logo_url).nombre}"
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", gap: 6, marginTop: 8, borderTop: "1px solid #f2f0e9", paddingTop: 8 }}>
+                      <input
+                        style={{ ...miniInputStyle, padding: "5px 8px", fontSize: 11.5 }}
+                        placeholder="Nombre de marca (ej: MFS)"
+                        value={marcaNombrePorGrupo[g.logo_url] || ""}
+                        onChange={(e) => setMarcaNombrePorGrupo((prev) => ({ ...prev, [g.logo_url]: e.target.value }))}
+                      />
+                      <button
+                        onClick={() => guardarGrupoComoMarca(g.logo_url)}
+                        disabled={marcaGuardandoGrupo === g.logo_url || !(marcaNombrePorGrupo[g.logo_url] || "").trim()}
+                        style={{ padding: "5px 10px", borderRadius: 5, border: "none", background: NAVY, color: "#fff", fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}
+                      >
+                        {marcaGuardandoGrupo === g.logo_url ? "…" : "Guardar"}
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -844,7 +990,25 @@ export default function App() {
               {bibliotecaSel.logo_url && (
                 <img src={bibliotecaSel.logo_url} alt="logo" style={{ maxHeight: 60, marginBottom: 12, display: "block" }} />
               )}
-              <Field label="Logo (imagen)">
+
+              <Field label="Buscar logo por marca (ej: MFS, BlackRock, Vontobel)" hint="Reutiliza un logo ya cargado — no sube ningún archivo nuevo.">
+                <input style={inputStyle} value={marcaFondoQuery} onChange={(e) => { setMarcaFondoQuery(e.target.value); setMarcaFondoAsignada(""); }} placeholder="Escribí el nombre de la marca" />
+              </Field>
+              {marcaFondoResultados.length > 0 && (
+                <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginTop: -8, marginBottom: 14, maxHeight: 160, overflowY: "auto" }}>
+                  {marcaFondoResultados.map((m) => (
+                    <div key={m.id} onClick={() => asignarMarcaAFondo(m)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #f2f0e9" }}>
+                      <img src={m.logo_url} alt="" style={{ height: 20, maxWidth: 70, objectFit: "contain" }} />
+                      {m.nombre}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {marcaFondoAsignada && (
+                <div style={{ fontSize: 12, color: TEAL, marginBottom: 14 }}>✓ Logo de "{marcaFondoAsignada}" asignado — no olvides apretar Guardar.</div>
+              )}
+
+              <Field label="O subir un logo nuevo para este fondo puntual (imagen)">
                 <input type="file" accept="image/*" onChange={(e) => setBibliotecaLogoFile(e.target.files[0])} style={{ ...inputStyle, padding: "8px" }} />
               </Field>
               <Field label="Descripción">
