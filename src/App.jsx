@@ -189,6 +189,17 @@ export default function App() {
   const [marcaFondoResultados, setMarcaFondoResultados] = useState([]);
   const [marcaFondoAsignada, setMarcaFondoAsignada] = useState(""); // nombre de la marca recién elegida, solo para mostrar feedback
 
+  // --- Asociación en bloque: parado en una marca, buscar fondos por ISIN o
+  // nombre y tildar varios de una — al guardar, se les asigna el logo_url
+  // de esa marca a todos juntos en un solo update. Así "iShares" se asocia
+  // a los 40 fondos de iShares de una sola vez en vez de uno por uno.
+  const [marcaAsocExpandidaId, setMarcaAsocExpandidaId] = useState(null);
+  const [marcaAsocQuery, setMarcaAsocQuery] = useState("");
+  const [marcaAsocResultados, setMarcaAsocResultados] = useState([]);
+  const [marcaAsocSeleccionados, setMarcaAsocSeleccionados] = useState({}); // isin -> nombre
+  const [marcaAsocGuardando, setMarcaAsocGuardando] = useState(false);
+  const [marcaAsocMensaje, setMarcaAsocMensaje] = useState("");
+
   async function cargarRegistro() {
     setRegistroCargando(true);
     const { data } = await supabase
@@ -203,6 +214,12 @@ export default function App() {
   async function cambiarStatus(id, nuevoStatus) {
     await supabase.from("propuestas").update({ status: nuevoStatus }).eq("id", id);
     setRegistro((prev) => prev.map((r) => r.id === id ? { ...r, status: nuevoStatus } : r));
+  }
+
+  async function eliminarPropuesta(id) {
+    if (!window.confirm("¿Eliminar este registro? Esta acción no se puede deshacer (no borra el PPTX/PDF ya generado en Storage, solo la fila del registro).")) return;
+    await supabase.from("propuestas").delete().eq("id", id);
+    setRegistro((prev) => prev.filter((r) => r.id !== id));
   }
 
   useEffect(() => {
@@ -368,6 +385,66 @@ export default function App() {
     setMarcaFondoAsignada(marca.nombre);
     setMarcaFondoQuery("");
     setMarcaFondoResultados([]);
+  }
+
+  // --- Asociación en bloque de una marca a varios fondos ---
+  function toggleMarcaAsocExpandida(marcaId) {
+    setMarcaAsocExpandidaId((prev) => (prev === marcaId ? null : marcaId));
+    setMarcaAsocQuery("");
+    setMarcaAsocResultados([]);
+    setMarcaAsocSeleccionados({});
+    setMarcaAsocMensaje("");
+  }
+
+  useEffect(() => {
+    if (marcaAsocQuery.trim().length < 2) { setMarcaAsocResultados([]); return; }
+    const t = setTimeout(async () => {
+      const { data } = await supabase
+        .from("fondos")
+        .select("isin, nombre, logo_url")
+        .or(`isin.ilike.%${marcaAsocQuery}%,nombre.ilike.%${marcaAsocQuery}%`)
+        .limit(25);
+      setMarcaAsocResultados(data || []);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [marcaAsocQuery]);
+
+  function toggleFondoAsoc(fondo) {
+    setMarcaAsocSeleccionados((prev) => {
+      const next = { ...prev };
+      if (next[fondo.isin]) delete next[fondo.isin];
+      else next[fondo.isin] = fondo.nombre;
+      return next;
+    });
+  }
+
+  // Aplica el logo de la marca a TODOS los ISIN tildados en un solo update.
+  // A partir de ahora, cuando cualquiera de esos fondos se agregue a un
+  // Portafolio propuesto o a Descripción de activos, ya va a traer el logo
+  // solo (el refresco que ya existe en handleGenerar y en las búsquedas de
+  // fondos toma logo_url directo de la tabla `fondos`).
+  async function aplicarAsociacionMarca(marca) {
+    const isins = Object.keys(marcaAsocSeleccionados);
+    if (isins.length === 0) return;
+    setMarcaAsocGuardando(true);
+    setMarcaAsocMensaje("");
+    try {
+      await supabase.from("fondos").update({ logo_url: marca.logo_url }).in("isin", isins);
+      setMarcaAsocMensaje(`✓ Logo asignado a ${isins.length} fondo${isins.length > 1 ? "s" : ""}.`);
+      setMarcaAsocSeleccionados({});
+      cargarAuditoriaLogos();
+    } catch (e) {
+      setMarcaAsocMensaje("Error al guardar: " + (e.message || e));
+    } finally {
+      setMarcaAsocGuardando(false);
+    }
+  }
+
+  // cuántos fondos ya tienen el logo de esta marca puesto (para mostrar en
+  // la tarjeta de la marca, se apoya en el agrupado de la auditoría)
+  function cantidadFondosConLogo(logo_url) {
+    const grupo = logosGrupos.find((g) => g.logo_url === logo_url);
+    return grupo ? grupo.fondos.length : 0;
   }
 
   // --- Importación masiva ---
@@ -759,7 +836,7 @@ export default function App() {
       const res = await fetch(`${BACKEND_URL}/generar`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tipo, creado_por: usuario, repcode, cliente, config }),
+        body: JSON.stringify({ tipo, creado_por: usuario, repcode: repcode || "sin-rep", cliente, config }),
       });
       if (!res.ok) throw new Error(`El backend respondió ${res.status}`);
       const data = await res.json();
@@ -771,12 +848,12 @@ export default function App() {
     }
   }
 
-  if (!usuario || !asesorSel) {
+  if (!usuario) {
     return (
       <div style={{ fontFamily: "Montserrat, sans-serif", background: CREAM, minHeight: "100vh", padding: 40, display: "flex", alignItems: "center", justifyContent: "center" }}>
         <div style={{ background: "#fff", borderRadius: 12, padding: "40px 44px", width: 440, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
           <h2 style={{ color: NAVY, margin: "0 0 6px", fontSize: 20 }}>Automatizador de propuestas</h2>
-          <p style={{ color: "#78776f", fontSize: 13.5, margin: "0 0 26px" }}>Elegí quién sos y a qué asesor corresponde esta propuesta.</p>
+          <p style={{ color: "#78776f", fontSize: 13.5, margin: "0 0 26px" }}>Elegí quién sos para empezar. El asesor / RepCode se elige después, en la Portada — es opcional.</p>
 
           <Field label="¿Quién sos?">
             <select style={inputStyle} value={usuario} onChange={(e) => setUsuario(e.target.value)}>
@@ -784,25 +861,6 @@ export default function App() {
               {USUARIOS.map((u) => <option key={u} value={u}>{u}</option>)}
             </select>
           </Field>
-
-          <Field label="Asesor / RepCode">
-            <input style={inputStyle} value={asesorQuery} onChange={(e) => { setAsesorQuery(e.target.value); setAsesorSel(null); setRepcode(""); }} placeholder="Buscar por RepCode o nombre" />
-          </Field>
-          {asesorResultados.length > 0 && !asesorSel && (
-            <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginTop: -8, marginBottom: 14, maxHeight: 180, overflowY: "auto" }}>
-              {asesorResultados.map((a) => (
-                <div key={a.repcode} onClick={() => { setAsesorSel(a); setRepcode(a.repcode); setAsesorQuery(`${a.repcode} — ${a.nombre}`); setAsesorResultados([]); }}
-                  style={{ padding: "8px 10px", fontSize: 13, cursor: "pointer", borderBottom: "1px solid #f2f0e9" }}>
-                  <b>{a.repcode}</b> — {a.nombre}
-                </div>
-              ))}
-            </div>
-          )}
-          {asesorSel && (
-            <div style={{ fontSize: 12.5, color: "#78776f", background: CREAM, borderRadius: 6, padding: "8px 10px", marginBottom: 18 }}>
-              {asesorSel.email}
-            </div>
-          )}
         </div>
       </div>
     );
@@ -818,7 +876,7 @@ export default function App() {
           <button onClick={() => setVista("nueva")} style={{ background: "none", border: "none", color: vista === "nueva" ? "#fff" : "#9fb0c9", fontWeight: vista === "nueva" ? 600 : 400, cursor: "pointer", fontSize: 13 }}>Nueva propuesta</button>
           <button onClick={() => setVista("registro")} style={{ background: "none", border: "none", color: vista === "registro" ? "#fff" : "#9fb0c9", fontWeight: vista === "registro" ? 600 : 400, cursor: "pointer", fontSize: 13 }}>Registro</button>
           <button onClick={() => setVista("biblioteca")} style={{ background: "none", border: "none", color: vista === "biblioteca" ? "#fff" : "#9fb0c9", fontWeight: vista === "biblioteca" ? 600 : 400, cursor: "pointer", fontSize: 13 }}>Biblioteca de fondos</button>
-          <span style={{ fontSize: 12.5, opacity: 0.85 }}>{usuario} · {repcode} — {asesorSel.nombre}</span>
+          <span style={{ fontSize: 12.5, opacity: 0.85 }}>{usuario}{asesorSel ? ` · ${repcode} — ${asesorSel.nombre}` : ""}</span>
         </div>
       </div>
 
@@ -910,6 +968,62 @@ export default function App() {
               </div>
               {marcaMensajeNueva && <div style={{ marginTop: 8, fontSize: 12, color: marcaMensajeNueva.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{marcaMensajeNueva}</div>}
             </div>
+
+            {marcasTodas.length > 0 && (
+              <div style={{ marginBottom: 26 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: NAVY, marginBottom: 10 }}>Marcas registradas — asociar a fondos</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {marcasTodas.map((m) => (
+                    <div key={m.id} style={{ background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 12 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <img src={m.logo_url} alt="" style={{ height: 26, maxWidth: 90, objectFit: "contain" }} />
+                        <div style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{m.nombre}</div>
+                        <div style={{ fontSize: 11.5, color: "#78776f" }}>{cantidadFondosConLogo(m.logo_url)} fondo{cantidadFondosConLogo(m.logo_url) === 1 ? "" : "s"} asociado{cantidadFondosConLogo(m.logo_url) === 1 ? "" : "s"}</div>
+                        <button onClick={() => toggleMarcaAsocExpandida(m.id)} style={{ border: "1px solid #d8d5cc", background: marcaAsocExpandidaId === m.id ? NAVY : "#fff", color: marcaAsocExpandidaId === m.id ? "#fff" : "#333", borderRadius: 6, padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>
+                          {marcaAsocExpandidaId === m.id ? "Cerrar" : "+ Agregar fondos"}
+                        </button>
+                      </div>
+
+                      {marcaAsocExpandidaId === m.id && (
+                        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #f2f0e9" }}>
+                          <input
+                            style={inputStyle}
+                            value={marcaAsocQuery}
+                            onChange={(e) => setMarcaAsocQuery(e.target.value)}
+                            placeholder={`Buscar fondos por ISIN o nombre (ej: "${m.nombre.split(" ")[0]}")`}
+                          />
+                          {marcaAsocResultados.length > 0 && (
+                            <div style={{ marginTop: 8, maxHeight: 220, overflowY: "auto", border: "1px solid #eae7dc", borderRadius: 6 }}>
+                              {marcaAsocResultados.map((f) => (
+                                <label key={f.isin} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 12.5, borderBottom: "1px solid #f2f0e9", cursor: "pointer" }}>
+                                  <input type="checkbox" checked={!!marcaAsocSeleccionados[f.isin]} onChange={() => toggleFondoAsoc(f)} />
+                                  {f.logo_url && <img src={f.logo_url} alt="" style={{ height: 16, opacity: f.logo_url === m.logo_url ? 1 : 0.5 }} />}
+                                  <b>{f.isin}</b> — {f.nombre}
+                                  {f.logo_url && f.logo_url !== m.logo_url && <span style={{ color: "#b23b3b", fontSize: 11 }}>(ya tiene otro logo)</span>}
+                                </label>
+                              ))}
+                            </div>
+                          )}
+                          {Object.keys(marcaAsocSeleccionados).length > 0 && (
+                            <div style={{ marginTop: 10, fontSize: 12, color: "#78776f" }}>
+                              {Object.keys(marcaAsocSeleccionados).length} fondo(s) tildado(s): {Object.values(marcaAsocSeleccionados).join(", ")}
+                            </div>
+                          )}
+                          <button
+                            onClick={() => aplicarAsociacionMarca(m)}
+                            disabled={marcaAsocGuardando || Object.keys(marcaAsocSeleccionados).length === 0}
+                            style={{ marginTop: 10, padding: "8px 16px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12.5, cursor: "pointer" }}
+                          >
+                            {marcaAsocGuardando ? "Guardando…" : `Asociar a ${Object.keys(marcaAsocSeleccionados).length || ""} fondo(s)`}
+                          </button>
+                          {marcaAsocMensaje && <div style={{ marginTop: 8, fontSize: 12, color: marcaAsocMensaje.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{marcaAsocMensaje}</div>}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <input style={{ ...inputStyle, maxWidth: 360, marginBottom: 18 }} value={logosQuery} onChange={(e) => setLogosQuery(e.target.value)} placeholder="Filtrar por ISIN o nombre de fondo" />
 
@@ -1034,7 +1148,7 @@ export default function App() {
             <table style={{ width: "100%", borderCollapse: "collapse", background: "#fff", fontSize: 13 }}>
               <thead>
                 <tr style={{ background: NAVY, color: "#fff" }}>
-                  {["Fecha", "Tipo", "Cliente / Cuenta", "Hecha por", "Asesor", "Monto", "Status", "Archivos"].map((h) => (
+                  {["Fecha", "Tipo", "Cliente / Cuenta", "Hecha por", "Asesor", "Monto", "Status", "Archivos", ""].map((h) => (
                     <th key={h} style={{ padding: "8px 10px", textAlign: "left" }}>{h}</th>
                   ))}
                 </tr>
@@ -1059,6 +1173,9 @@ export default function App() {
                     <td style={{ padding: "8px 10px" }}>
                       {r.archivo_pptx_url && <a href={r.archivo_pptx_url} target="_blank" rel="noreferrer" style={{ color: NAVY, marginRight: 10 }}>PPTX</a>}
                       {r.archivo_pdf_url && <a href={r.archivo_pdf_url} target="_blank" rel="noreferrer" style={{ color: NAVY }}>PDF</a>}
+                    </td>
+                    <td style={{ padding: "8px 10px" }}>
+                      <button onClick={() => eliminarPropuesta(r.id)} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer" }}>Eliminar</button>
                     </td>
                   </tr>
                 ))}
@@ -1096,6 +1213,25 @@ export default function App() {
                 <Field label="Número de cuenta StoneX">
                   <input style={inputStyle} value={nroCuenta} onChange={(e) => setNroCuenta(e.target.value)} />
                 </Field>
+              )}
+              <Field label="Asesor / RepCode (opcional)" hint="Se puede armar la propuesta sin asociarla a un asesor puntual.">
+                <input style={inputStyle} value={asesorQuery} onChange={(e) => { setAsesorQuery(e.target.value); setAsesorSel(null); setRepcode(""); }} placeholder="Buscar por RepCode o nombre" />
+              </Field>
+              {asesorResultados.length > 0 && !asesorSel && (
+                <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginTop: -8, marginBottom: 14, maxHeight: 180, overflowY: "auto" }}>
+                  {asesorResultados.map((a) => (
+                    <div key={a.repcode} onClick={() => { setAsesorSel(a); setRepcode(a.repcode); setAsesorQuery(`${a.repcode} — ${a.nombre}`); setAsesorResultados([]); }}
+                      style={{ padding: "8px 10px", fontSize: 13, cursor: "pointer", borderBottom: "1px solid #f2f0e9" }}>
+                      <b>{a.repcode}</b> — {a.nombre}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {asesorSel && (
+                <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5, color: "#78776f", background: CREAM, borderRadius: 6, padding: "8px 10px", marginBottom: 18 }}>
+                  <span style={{ flex: 1 }}>{asesorSel.email}</span>
+                  <button onClick={() => { setAsesorSel(null); setRepcode(""); setAsesorQuery(""); }} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>Quitar</button>
+                </div>
               )}
               {tipo === "Propuesta" && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
