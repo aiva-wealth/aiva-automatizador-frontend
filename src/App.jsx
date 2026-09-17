@@ -24,7 +24,7 @@ const RISK_TEXT = {
 // Cada tipo de documento tiene su propio recorrido de pasos — Revisión no
 // arma un portafolio propuesto (es sobre una cuenta que ya existe), pero sí
 // tiene "Evolución de la cuenta", que Propuesta no tiene.
-const STEPS_PROPUESTA = ["Portada", "Equipo", "Propuesta de valor", "Estrategia", "Portafolio actual", "Portafolio propuesto", "Comentarios"];
+const STEPS_PROPUESTA = ["Portada", "Equipo", "Propuesta de valor", "Estrategia", "Portafolio actual", "Portafolio propuesto", "Descripción de activos", "Comentarios"];
 const STEPS_REVISION = ["Portada", "Equipo", "Propuesta de valor", "Estrategia", "Evolución de la cuenta", "Portafolio actual", "Comentarios"];
 
 const DEFAULT_TEAM = [
@@ -114,6 +114,14 @@ export default function App() {
   const [nuevoActivoNombre, setNuevoActivoNombre] = useState("");
   const [nuevoActivoIsin, setNuevoActivoIsin] = useState("");
   const [comentarios, setComentarios] = useState("");
+
+  // --- Descripción de activos: selección manual por categoría, ---
+  // independiente de lo que se haya cargado en Portafolio propuesto
+  const DESC_CATEGORIAS = ["Renta Fija & Multi Activo", "Renta Variable", "Alternativos Líquidos"];
+  const [descSeleccion, setDescSeleccion] = useState({ "Renta Fija & Multi Activo": [], "Renta Variable": [], "Alternativos Líquidos": [] });
+  const [descQuery, setDescQuery] = useState("");
+  const [descResultados, setDescResultados] = useState([]);
+  const [descCategoriaDestino, setDescCategoriaDestino] = useState("Renta Fija & Multi Activo");
 
   const [evolucionFileName, setEvolucionFileName] = useState("");
   const [evolucionImageBase64, setEvolucionImageBase64] = useState(null);
@@ -353,6 +361,50 @@ export default function App() {
     setNuevoActivoIsin("");
   }
 
+  // --- Descripción de activos: búsqueda + selección manual por categoría ---
+  useEffect(() => {
+    if (descQuery.trim().length < 2) { setDescResultados([]); return; }
+    const t = setTimeout(async () => {
+      const { data } = await supabase
+        .from("fondos")
+        .select("isin, nombre, descripcion, factsheet_url, logo_url")
+        .or(`isin.ilike.%${descQuery}%,nombre.ilike.%${descQuery}%`)
+        .limit(8);
+      setDescResultados(data || []);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [descQuery]);
+
+  function addDescManual(fondo) {
+    setDescSeleccion((prev) => {
+      const lista = prev[descCategoriaDestino];
+      if (lista.some((f) => f.isin === fondo.isin)) return prev;
+      return { ...prev, [descCategoriaDestino]: [...lista, fondo] };
+    });
+    setDescQuery("");
+    setDescResultados([]);
+  }
+
+  function quitarDescManual(categoria, isin) {
+    setDescSeleccion((prev) => ({ ...prev, [categoria]: prev[categoria].filter((f) => f.isin !== isin) }));
+  }
+
+  // Toma lo que ya está cargado en Portafolio propuesto y lo vuelca en las
+  // 3 categorías de descripción — punto de partida rápido, después se
+  // puede seguir ajustando a mano.
+  function prellenarDescDesdePortafolio() {
+    const grupos = { "Renta Fija & Multi Activo": [], "Renta Variable": [], "Alternativos Líquidos": [] };
+    proposedAssets.forEach((a) => {
+      const destino = (a.categoria === "Renta Fija" || a.categoria === "Multi Activo") ? "Renta Fija & Multi Activo"
+        : a.categoria === "Renta Variable" ? "Renta Variable"
+        : a.categoria === "Alternativos Líquidos" ? "Alternativos Líquidos" : null;
+      if (destino && a.isin && !grupos[destino].some((f) => f.isin === a.isin)) {
+        grupos[destino].push({ isin: a.isin, nombre: a.nombre, descripcion: a.descripcion, factsheet_url: a.factsheet_url, logo_url: a.logo_url });
+      }
+    });
+    setDescSeleccion(grupos);
+  }
+
   function updateProposedField(idx, field, value) {
     setProposedAssets((prev) => prev.map((a, i) => {
       if (i !== idx) return a;
@@ -437,10 +489,12 @@ export default function App() {
     return { ...a, rendimiento, pct };
   }
 
-  function buildConfig() {
+  function buildConfig(proposedAssetsOverride, descSeleccionOverride) {
+    const assetsAUsar = proposedAssetsOverride || proposedAssets;
+    const descAUsar = descSeleccionOverride || descSeleccion;
     const categorias = CATEGORIAS.map((label) => ({
       label: label === "Renta Fija" ? "Fondos Renta Fija" : label === "Multi Activo" ? "Fondo Multi Activo" : label === "Renta Variable" ? "Fondo Renta Variable" : "Fondos Alternativos Líquidos",
-      fondos: proposedAssets.filter((a) => a.categoria === label).map((a) => ({
+      fondos: assetsAUsar.filter((a) => a.categoria === label).map((a) => ({
         isin: a.isin, nombre: a.nombre, sector: a.sector || "", ytd: a.ytd || 0, y1: a.y1 || 0, y3: a.y3 || 0, y5: a.y5 || 0, pct: a.pct, monto: a.monto, ter: a.ter || 0,
       })),
     })).filter((c) => c.fondos.length > 0);
@@ -448,7 +502,7 @@ export default function App() {
     const cashMonto = Number(cashManualPropuesta) || 0;
 
     const byCat = {};
-    proposedAssets.forEach((a) => { byCat[a.categoria] = (byCat[a.categoria] || 0) + (a.pct || 0) / 100; });
+    assetsAUsar.forEach((a) => { byCat[a.categoria] = (byCat[a.categoria] || 0) + (a.pct || 0) / 100; });
     const donut1 = {
       "Fondos Renta Fija": byCat["Renta Fija"] || 0,
       "Fondos Renta Variable": byCat["Renta Variable"] || 0,
@@ -462,9 +516,9 @@ export default function App() {
     };
 
     const fondosPorCategoria = {
-      "Renta Fija & Multi Activo": proposedAssets.filter((a) => a.categoria === "Renta Fija" || a.categoria === "Multi Activo").map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "", logo_url: a.logo_url || "" })),
-      "Renta Variable": proposedAssets.filter((a) => a.categoria === "Renta Variable").map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "", logo_url: a.logo_url || "" })),
-      "Alternativos Líquidos": proposedAssets.filter((a) => a.categoria === "Alternativos Líquidos").map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "", logo_url: a.logo_url || "" })),
+      "Renta Fija & Multi Activo": descAUsar["Renta Fija & Multi Activo"].map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "", logo_url: a.logo_url || "" })),
+      "Renta Variable": descAUsar["Renta Variable"].map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "", logo_url: a.logo_url || "" })),
+      "Alternativos Líquidos": descAUsar["Alternativos Líquidos"].map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "", logo_url: a.logo_url || "" })),
     };
 
     // --- Revisión: los % y rendimiento salen solos de costo/valor actual ---
@@ -521,7 +575,34 @@ export default function App() {
   async function handleGenerar() {
     setGenerando(true); setError(""); setResultado(null);
     try {
-      const config = buildConfig();
+      // antes de armar el config, se refrescan descripción/logo/factsheet
+      // de cada fondo directo desde la biblioteca — así no importa si el
+      // fondo se agregó a la propuesta antes o después de actualizarlo en
+      // la biblioteca, siempre viaja la versión más reciente
+      const isinsUsados = proposedAssets.map((a) => a.isin).filter(Boolean);
+      const isinsDesc = Object.values(descSeleccion).flat().map((a) => a.isin).filter(Boolean);
+      const todosLosIsin = [...new Set([...isinsUsados, ...isinsDesc])];
+      let frescos = {};
+      if (todosLosIsin.length > 0) {
+        const { data } = await supabase.from("fondos").select("isin, descripcion, factsheet_url, logo_url").in("isin", todosLosIsin);
+        (data || []).forEach((f) => { frescos[f.isin] = f; });
+      }
+      const proposedAssetsFrescos = proposedAssets.map((a) => ({
+        ...a,
+        descripcion: frescos[a.isin]?.descripcion ?? a.descripcion,
+        factsheet_url: frescos[a.isin]?.factsheet_url ?? a.factsheet_url,
+        logo_url: frescos[a.isin]?.logo_url ?? a.logo_url,
+      }));
+      const descSeleccionFresca = Object.fromEntries(
+        Object.entries(descSeleccion).map(([cat, lista]) => [cat, lista.map((a) => ({
+          ...a,
+          descripcion: frescos[a.isin]?.descripcion ?? a.descripcion,
+          factsheet_url: frescos[a.isin]?.factsheet_url ?? a.factsheet_url,
+          logo_url: frescos[a.isin]?.logo_url ?? a.logo_url,
+        }))])
+      );
+
+      const config = buildConfig(proposedAssetsFrescos, descSeleccionFresca);
       const res = await fetch(`${BACKEND_URL}/generar`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1016,6 +1097,48 @@ export default function App() {
                       <input type="number" style={miniInputStyle} value={a.y5} onChange={(e) => updateProposedField(i, "y5", +e.target.value)} />
                     </MiniField>
                   </div>
+                </div>
+              ))}
+            </Section>
+          )}
+
+          {stepName === "Descripción de activos" && (
+            <Section title="Descripción de activos" subtitle="Elegí a mano, por categoría, qué fondos van en cada página de descripción — con su logo, descripción y factsheet ya asociados desde la biblioteca. No depende de lo que hayas cargado en Portafolio propuesto.">
+              <button onClick={prellenarDescDesdePortafolio} style={{ marginBottom: 16, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>Rellenar automático desde Portafolio propuesto</button>
+
+              <Field label="Buscar fondo en la biblioteca">
+                <div style={{ display: "flex", gap: 8 }}>
+                  <select style={{ ...miniInputStyle, maxWidth: 220 }} value={descCategoriaDestino} onChange={(e) => setDescCategoriaDestino(e.target.value)}>
+                    {DESC_CATEGORIAS.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <input style={inputStyle} value={descQuery} onChange={(e) => setDescQuery(e.target.value)} placeholder="Buscar por ISIN o nombre, se agrega a la categoría de arriba" />
+                </div>
+              </Field>
+              {descResultados.length > 0 && (
+                <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginBottom: 18, maxHeight: 180, overflowY: "auto" }}>
+                  {descResultados.map((f) => (
+                    <div key={f.isin} onClick={() => addDescManual(f)} style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #f2f0e9", display: "flex", alignItems: "center", gap: 8 }}>
+                      {f.logo_url && <img src={f.logo_url} alt="" style={{ height: 18 }} />}
+                      <b>{f.isin}</b> — {f.nombre} {!f.descripcion && <span style={{ color: "#b23b3b" }}>(sin descripción todavía)</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {DESC_CATEGORIAS.map((cat) => (
+                <div key={cat} style={{ marginBottom: 22 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: NAVY, marginBottom: 8 }}>{cat} ({descSeleccion[cat].length})</div>
+                  {descSeleccion[cat].length === 0 && <div style={{ fontSize: 12, color: "#a5a399", marginBottom: 8 }}>Sin fondos elegidos — esta página no va a aparecer en el documento.</div>}
+                  {descSeleccion[cat].map((f) => (
+                    <div key={f.isin} style={{ display: "flex", alignItems: "center", gap: 10, background: "#fff", border: "1px solid #eae7dc", borderRadius: 6, padding: "8px 10px", marginBottom: 6 }}>
+                      {f.logo_url ? <img src={f.logo_url} alt="" style={{ height: 24 }} /> : <div style={{ width: 24 }} />}
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13 }}>{f.nombre}</div>
+                        <div style={{ fontSize: 11, color: f.descripcion ? "#78776f" : "#b23b3b" }}>{f.descripcion ? f.descripcion.slice(0, 90) + (f.descripcion.length > 90 ? "…" : "") : "Sin descripción cargada en la biblioteca todavía"}</div>
+                      </div>
+                      <button onClick={() => quitarDescManual(cat, f.isin)} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer" }}>Quitar</button>
+                    </div>
+                  ))}
                 </div>
               ))}
             </Section>
