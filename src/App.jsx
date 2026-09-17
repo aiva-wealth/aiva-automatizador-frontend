@@ -150,6 +150,16 @@ export default function App() {
   const [importAplicando, setImportAplicando] = useState(false);
   const [importResumen, setImportResumen] = useState("");
 
+  // --- Auditoría de logos: agrupa TODOS los fondos que tienen logo_url por
+  // el logo real (comparando por URL), para detectar rápido casos como el
+  // de Calamos/Morgan Stanley — un fondo con el logo de otro pegado por
+  // error en la importación masiva (se agrupaban varios ISIN bajo un mismo
+  // logo a mano, y ahí es fácil equivocarse de fila).
+  const [logosVista, setLogosVista] = useState(false);
+  const [logosCargando, setLogosCargando] = useState(false);
+  const [logosGrupos, setLogosGrupos] = useState([]);
+  const [logosQuery, setLogosQuery] = useState("");
+
   async function cargarRegistro() {
     setRegistroCargando(true);
     const { data } = await supabase
@@ -216,6 +226,41 @@ export default function App() {
       setBibliotecaGuardando(false);
     }
   }
+
+  // --- Auditoría de logos: trae TODOS los fondos con logo_url cargado y
+  // los agrupa por URL de logo — cada grupo debería ser un solo fondo (o
+  // una familia real que comparte marca); si aparece un grupo con nombres
+  // de fondos que no tienen nada que ver entre sí, ahí hay un error de
+  // carga para corregir.
+  async function cargarAuditoriaLogos() {
+    setLogosCargando(true);
+    const { data } = await supabase
+      .from("fondos")
+      .select("isin, nombre, logo_url")
+      .not("logo_url", "is", null)
+      .order("logo_url");
+    const porLogo = new Map();
+    (data || []).forEach((f) => {
+      if (!porLogo.has(f.logo_url)) porLogo.set(f.logo_url, []);
+      porLogo.get(f.logo_url).push(f);
+    });
+    const grupos = Array.from(porLogo.entries()).map(([logo_url, fondos]) => ({ logo_url, fondos }));
+    // los grupos con más de un fondo van primero — son los que más vale la
+    // pena revisar (o son una familia real, o es un error de carga)
+    grupos.sort((a, b) => b.fondos.length - a.fondos.length);
+    setLogosGrupos(grupos);
+    setLogosCargando(false);
+  }
+
+  useEffect(() => {
+    if (vista === "biblioteca" && logosVista) cargarAuditoriaLogos();
+  }, [vista, logosVista]);
+
+  const logosGruposFiltrados = logosQuery.trim().length < 2
+    ? logosGrupos
+    : logosGrupos.filter((g) => g.fondos.some((f) =>
+        f.nombre.toLowerCase().includes(logosQuery.toLowerCase()) || f.isin.toLowerCase().includes(logosQuery.toLowerCase())
+      ));
 
   // --- Importación masiva ---
   async function handleImportJson(file) {
@@ -731,12 +776,54 @@ export default function App() {
               </>
             )}
           </div>
+        ) : logosVista ? (
+          <div style={{ padding: "28px 36px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <h3 style={{ color: NAVY, fontSize: 16, margin: 0 }}>Auditoría de logos</h3>
+              <button onClick={() => setLogosVista(false)} style={{ border: "none", background: "none", color: "#78776f", fontSize: 12.5, cursor: "pointer" }}>← Volver a la biblioteca</button>
+            </div>
+            <p style={{ fontSize: 12.5, color: "#78776f", marginBottom: 16 }}>
+              Agrupa todos los fondos por su logo real. Un grupo con un solo fondo es lo normal. Un grupo con varios fondos que no son de la misma familia (como pasó con Calamos y Morgan Stanley) suele ser un error de carga — el logo de uno quedó pegado en el otro.
+            </p>
+
+            <input style={{ ...inputStyle, maxWidth: 360, marginBottom: 18 }} value={logosQuery} onChange={(e) => setLogosQuery(e.target.value)} placeholder="Filtrar por ISIN o nombre de fondo" />
+
+            {logosCargando && <div style={{ fontSize: 13, color: "#78776f" }}>Cargando…</div>}
+            {!logosCargando && logosGruposFiltrados.length === 0 && (
+              <div style={{ fontSize: 13, color: "#78776f" }}>No hay fondos con logo cargado{logosQuery ? " que coincidan con ese filtro" : ""}.</div>
+            )}
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
+              {logosGruposFiltrados.map((g) => (
+                <div key={g.logo_url} style={{
+                  background: "#fff", border: `1px solid ${g.fondos.length > 1 ? "#e0b96a" : "#eae7dc"}`, borderRadius: 8, padding: 14,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                    <img src={g.logo_url} alt="" style={{ height: 32, maxWidth: 120, objectFit: "contain" }} />
+                    {g.fondos.length > 1 && (
+                      <span style={{ fontSize: 10.5, color: "#8a6d1f", background: "#fbf1de", borderRadius: 4, padding: "2px 6px", fontWeight: 600 }}>
+                        {g.fondos.length} fondos comparten este logo
+                      </span>
+                    )}
+                  </div>
+                  {g.fondos.map((f) => (
+                    <div key={f.isin} style={{ fontSize: 12, padding: "4px 0", borderTop: "1px solid #f2f0e9" }}>
+                      <b>{f.isin}</b> — {f.nombre}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
         ) : (
         <div style={{ padding: "28px 36px", display: "flex", gap: 24 }}>
           <div style={{ width: 360 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <h3 style={{ color: NAVY, fontSize: 16, marginBottom: 8 }}>Biblioteca de fondos</h3>
-              <button onClick={() => setImportModo(true)} style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>Importar masivo</button>
+              <div style={{ display: "flex", gap: 12 }}>
+                <button onClick={() => setLogosVista(true)} style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>Ver todos los logos</button>
+                <button onClick={() => setImportModo(true)} style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>Importar masivo</button>
+              </div>
             </div>
             <p style={{ fontSize: 12.5, color: "#78776f", marginBottom: 14 }}>Buscá un fondo para cargarle logo, descripción y factsheet — queda guardado para todas las próximas propuestas, no hay que repetirlo.</p>
             <input style={inputStyle} value={bibliotecaQuery} onChange={(e) => setBibliotecaQuery(e.target.value)} placeholder="Buscar por ISIN o nombre" />
