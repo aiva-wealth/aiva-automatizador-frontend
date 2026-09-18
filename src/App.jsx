@@ -196,7 +196,14 @@ export default function App() {
   const [marcaImportEntradas, setMarcaImportEntradas] = useState([]); // [{file, nombre}]
   const [marcaImportAplicando, setMarcaImportAplicando] = useState(false);
   const [marcaImportResumen, setMarcaImportResumen] = useState("");
-  const [marcaAsocExpandidaId, setMarcaAsocExpandidaId] = useState(null);
+  // --- Fila unificada expandible (reemplaza las dos secciones separadas de
+  // antes: "marcas registradas" + "grupos por logo"). Una sola lista,
+  // colapsada por defecto (solo logo + nombre); al abrir una fila se ve la
+  // lista de fondos, se pueden agregar/quitar, y cambiar el logo.
+  const [filaExpandidaKey, setFilaExpandidaKey] = useState(null);
+  const [marcaLogoNuevoArchivo, setMarcaLogoNuevoArchivo] = useState(null);
+  const [marcaLogoActualizando, setMarcaLogoActualizando] = useState(false);
+  const [marcaLogoMensaje, setMarcaLogoMensaje] = useState("");
   const [marcaAsocQuery, setMarcaAsocQuery] = useState("");
   const [marcaAsocResultados, setMarcaAsocResultados] = useState([]);
   const [marcaAsocSeleccionados, setMarcaAsocSeleccionados] = useState({}); // isin -> nombre
@@ -308,11 +315,42 @@ export default function App() {
     if (vista === "biblioteca" && logosVista) { cargarAuditoriaLogos(); cargarTodasLasMarcas(); }
   }, [vista, logosVista]);
 
-  const logosGruposFiltrados = logosQuery.trim().length < 2
-    ? logosGrupos
-    : logosGrupos.filter((g) => g.fondos.some((f) =>
-        f.nombre.toLowerCase().includes(logosQuery.toLowerCase()) || f.isin.toLowerCase().includes(logosQuery.toLowerCase())
-      ));
+  // --- Lista unificada: cada marca registrada + los grupos de logo que
+  // todavía no tienen nombre asignado (para poder bautizarlos ahí mismo) —
+  // una sola lista en vez de dos secciones separadas y redundantes.
+  const gruposPorLogoUrl = new Map(logosGrupos.map((g) => [g.logo_url, g]));
+  const marcaLogoUrls = new Set(marcasTodas.map((m) => m.logo_url));
+
+  const filasUnificadasSinFiltrar = [
+    ...marcasTodas.map((m) => ({
+      key: `m:${m.id}`,
+      tipo: "marca",
+      marca: m,
+      logo_url: m.logo_url,
+      fondos: gruposPorLogoUrl.get(m.logo_url)?.fondos || [],
+    })),
+    ...logosGrupos.filter((g) => !marcaLogoUrls.has(g.logo_url)).map((g) => ({
+      key: `g:${g.logo_url}`,
+      tipo: "sinNombre",
+      marca: null,
+      logo_url: g.logo_url,
+      fondos: g.fondos,
+    })),
+  ].sort((a, b) => {
+    if (a.tipo !== b.tipo) return a.tipo === "sinNombre" ? -1 : 1; // sin nombre primero, necesitan atención
+    const na = a.marca?.nombre || "";
+    const nb = b.marca?.nombre || "";
+    return na.localeCompare(nb);
+  });
+
+  const filasUnificadas = logosQuery.trim().length < 2
+    ? filasUnificadasSinFiltrar
+    : filasUnificadasSinFiltrar.filter((fila) =>
+        (fila.marca?.nombre || "").toLowerCase().includes(logosQuery.toLowerCase()) ||
+        fila.fondos.some((f) =>
+          f.nombre.toLowerCase().includes(logosQuery.toLowerCase()) || f.isin.toLowerCase().includes(logosQuery.toLowerCase())
+        )
+      );
 
   // trae todas las marcas ya registradas, para saber qué grupos de la
   // auditoría ya tienen nombre asignado (y no mostrarles el formulario de
@@ -398,12 +436,15 @@ export default function App() {
   }
 
   // --- Asociación en bloque de una marca a varios fondos ---
-  function toggleMarcaAsocExpandida(marcaId) {
-    setMarcaAsocExpandidaId((prev) => (prev === marcaId ? null : marcaId));
+  // --- Fila unificada expandible ---
+  function toggleFila(key) {
+    setFilaExpandidaKey((prev) => (prev === key ? null : key));
     setMarcaAsocQuery("");
     setMarcaAsocResultados([]);
     setMarcaAsocSeleccionados({});
     setMarcaAsocMensaje("");
+    setMarcaLogoNuevoArchivo(null);
+    setMarcaLogoMensaje("");
   }
 
   useEffect(() => {
@@ -455,6 +496,48 @@ export default function App() {
   function cantidadFondosConLogo(logo_url) {
     const grupo = logosGrupos.find((g) => g.logo_url === logo_url);
     return grupo ? grupo.fondos.length : 0;
+  }
+
+  // Cambia la imagen de una marca ya registrada. Clave: además de actualizar
+  // marcas_logo, también actualiza TODOS los fondos que ya tenían la URL
+  // vieja para que apunten a la nueva — así ningún fondo asociado pierde su
+  // logo por el simple hecho de haber actualizado la imagen.
+  async function actualizarLogoMarca(marca) {
+    if (!marcaLogoNuevoArchivo) return;
+    setMarcaLogoActualizando(true);
+    setMarcaLogoMensaje("");
+    try {
+      const ext = marcaLogoNuevoArchivo.name.split(".").pop();
+      const path = `marcas/${slugify(marca.nombre)}-${Date.now()}.${ext}`;
+      const { error: uploadError } = await supabase.storage.from("logos-fondos").upload(path, marcaLogoNuevoArchivo, { upsert: true });
+      if (uploadError) throw uploadError;
+      const { data } = supabase.storage.from("logos-fondos").getPublicUrl(path);
+      const nuevaUrl = data.publicUrl;
+      const viejaUrl = marca.logo_url;
+
+      const { error: errMarca } = await supabase.from("marcas_logo").update({ logo_url: nuevaUrl }).eq("id", marca.id);
+      if (errMarca) throw errMarca;
+
+      // reasignar a la nueva URL todos los fondos que tenían la vieja
+      const { error: errFondos } = await supabase.from("fondos").update({ logo_url: nuevaUrl }).eq("logo_url", viejaUrl);
+      if (errFondos) throw errFondos;
+
+      setMarcaLogoMensaje("✓ Logo actualizado — los fondos ya asociados lo siguen teniendo.");
+      setMarcaLogoNuevoArchivo(null);
+      await cargarTodasLasMarcas();
+      await cargarAuditoriaLogos();
+    } catch (e) {
+      setMarcaLogoMensaje("Error al actualizar: " + (e.message || JSON.stringify(e)));
+    } finally {
+      setMarcaLogoActualizando(false);
+    }
+  }
+
+  // Sacarle el logo a un fondo puntual (sin borrar la marca ni afectar a
+  // los demás fondos que la tengan).
+  async function quitarFondoDeGrupo(isin) {
+    await supabase.from("fondos").update({ logo_url: null }).eq("isin", isin);
+    await cargarAuditoriaLogos();
   }
 
   // --- Importación de marcas en bloque ---
@@ -1055,111 +1138,112 @@ export default function App() {
               {marcaImportResumen && <div style={{ marginTop: 8, fontSize: 12, color: "#3a7d44" }}>{marcaImportResumen}</div>}
             </div>
 
-            {marcasTodas.length > 0 && (
-              <div style={{ marginBottom: 26 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 700, color: NAVY, marginBottom: 10 }}>Marcas registradas — asociar a fondos</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {marcasTodas.map((m) => (
-                    <div key={m.id} style={{ background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 12 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                        <img src={m.logo_url} alt="" style={{ height: 26, maxWidth: 90, objectFit: "contain" }} />
-                        <div style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{m.nombre}</div>
-                        <div style={{ fontSize: 11.5, color: "#78776f" }}>{cantidadFondosConLogo(m.logo_url)} fondo{cantidadFondosConLogo(m.logo_url) === 1 ? "" : "s"} asociado{cantidadFondosConLogo(m.logo_url) === 1 ? "" : "s"}</div>
-                        <button onClick={() => toggleMarcaAsocExpandida(m.id)} style={{ border: "1px solid #d8d5cc", background: marcaAsocExpandidaId === m.id ? NAVY : "#fff", color: marcaAsocExpandidaId === m.id ? "#fff" : "#333", borderRadius: 6, padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>
-                          {marcaAsocExpandidaId === m.id ? "Cerrar" : "+ Agregar fondos"}
-                        </button>
+            {logosCargando && <div style={{ fontSize: 13, color: "#78776f" }}>Cargando…</div>}
+
+            <input style={{ ...inputStyle, maxWidth: 360, marginBottom: 18 }} value={logosQuery} onChange={(e) => setLogosQuery(e.target.value)} placeholder="Filtrar por ISIN, nombre de fondo o de marca" />
+
+            {filasUnificadas.length === 0 ? (
+              <div style={{ fontSize: 13, color: "#78776f" }}>No hay logos cargados{logosQuery ? " que coincidan con ese filtro" : ""}.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {filasUnificadas.map((fila) => {
+                  const abierta = filaExpandidaKey === fila.key;
+                  return (
+                    <div key={fila.key} style={{ background: "#fff", border: `1px solid ${fila.tipo === "sinNombre" ? "#e0b96a" : "#eae7dc"}`, borderRadius: 8, overflow: "hidden" }}>
+                      <div onClick={() => toggleFila(fila.key)} style={{ display: "flex", alignItems: "center", gap: 12, padding: 12, cursor: "pointer" }}>
+                        <img src={fila.logo_url} alt="" style={{ height: 26, maxWidth: 90, objectFit: "contain" }} />
+                        <div style={{ flex: 1, fontSize: 13, fontWeight: 600, color: fila.tipo === "sinNombre" ? "#8a6d1f" : "#333" }}>
+                          {fila.marca?.nombre || "(sin nombre — click para asignarle uno)"}
+                        </div>
+                        <span style={{ fontSize: 11, color: "#a5a399" }}>{fila.fondos.length} fondo{fila.fondos.length === 1 ? "" : "s"}</span>
+                        <span style={{ fontSize: 12, color: "#78776f" }}>{abierta ? "▲" : "▼"}</span>
                       </div>
 
-                      {marcaAsocExpandidaId === m.id && (
-                        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #f2f0e9" }}>
-                          <input
-                            style={inputStyle}
-                            value={marcaAsocQuery}
-                            onChange={(e) => setMarcaAsocQuery(e.target.value)}
-                            placeholder={`Buscar fondos por ISIN o nombre (ej: "${m.nombre.split(" ")[0]}")`}
-                          />
-                          {marcaAsocResultados.length > 0 && (
-                            <div style={{ marginTop: 8, maxHeight: 220, overflowY: "auto", border: "1px solid #eae7dc", borderRadius: 6 }}>
-                              {marcaAsocResultados.map((f) => (
-                                <label key={f.isin} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 12.5, borderBottom: "1px solid #f2f0e9", cursor: "pointer" }}>
-                                  <input type="checkbox" checked={!!marcaAsocSeleccionados[f.isin]} onChange={() => toggleFondoAsoc(f)} />
-                                  {f.logo_url && <img src={f.logo_url} alt="" style={{ height: 16, opacity: f.logo_url === m.logo_url ? 1 : 0.5 }} />}
-                                  <b>{f.isin}</b> — {f.nombre}
-                                  {f.logo_url && f.logo_url !== m.logo_url && <span style={{ color: "#b23b3b", fontSize: 11 }}>(ya tiene otro logo)</span>}
-                                </label>
-                              ))}
+                      {abierta && (
+                        <div style={{ padding: "0 14px 14px 14px", borderTop: "1px solid #f2f0e9" }}>
+
+                          {fila.tipo === "marca" && (
+                            <div style={{ marginTop: 12, marginBottom: 14 }}>
+                              <div style={{ fontSize: 11.5, fontWeight: 600, color: NAVY, marginBottom: 6 }}>Cambiar el logo de esta marca</div>
+                              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                <input type="file" accept="image/*" onChange={(e) => setMarcaLogoNuevoArchivo(e.target.files[0])} style={{ ...miniInputStyle, padding: "6px", flex: 1 }} />
+                                <button onClick={() => actualizarLogoMarca(fila.marca)} disabled={marcaLogoActualizando || !marcaLogoNuevoArchivo} style={{ padding: "7px 14px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}>
+                                  {marcaLogoActualizando ? "…" : "Actualizar"}
+                                </button>
+                              </div>
+                              <div style={{ fontSize: 10.5, color: "#a5a399", marginTop: 4 }}>Los fondos que ya tiene asociados van a seguir teniéndolo — no se pierden.</div>
+                              {marcaLogoMensaje && <div style={{ marginTop: 6, fontSize: 11.5, color: marcaLogoMensaje.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{marcaLogoMensaje}</div>}
                             </div>
                           )}
-                          {Object.keys(marcaAsocSeleccionados).length > 0 && (
-                            <div style={{ marginTop: 10, fontSize: 12, color: "#78776f" }}>
-                              {Object.keys(marcaAsocSeleccionados).length} fondo(s) tildado(s): {Object.values(marcaAsocSeleccionados).join(", ")}
+
+                          <div style={{ fontSize: 11.5, fontWeight: 600, color: NAVY, marginTop: 12, marginBottom: 6 }}>Fondos asociados</div>
+                          {fila.fondos.length === 0 && <div style={{ fontSize: 12, color: "#a5a399", marginBottom: 8 }}>Ninguno todavía.</div>}
+                          {fila.fondos.map((f) => (
+                            <div key={f.isin} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "5px 0", borderTop: "1px solid #f2f0e9" }}>
+                              <span style={{ flex: 1 }}><b>{f.isin}</b> — {f.nombre}</span>
+                              <button onClick={() => quitarFondoDeGrupo(f.isin)} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 11.5, cursor: "pointer" }}>Quitar</button>
+                            </div>
+                          ))}
+
+                          {fila.tipo === "sinNombre" ? (
+                            <div style={{ display: "flex", gap: 6, marginTop: 12, borderTop: "1px solid #f2f0e9", paddingTop: 12 }}>
+                              <input
+                                style={{ ...miniInputStyle, padding: "6px 9px" }}
+                                placeholder="Nombre de marca (ej: MFS)"
+                                value={marcaNombrePorGrupo[fila.logo_url] || ""}
+                                onChange={(e) => setMarcaNombrePorGrupo((prev) => ({ ...prev, [fila.logo_url]: e.target.value }))}
+                              />
+                              <button
+                                onClick={() => guardarGrupoComoMarca(fila.logo_url)}
+                                disabled={marcaGuardandoGrupo === fila.logo_url || !(marcaNombrePorGrupo[fila.logo_url] || "").trim()}
+                                style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}
+                              >
+                                {marcaGuardandoGrupo === fila.logo_url ? "…" : "Guardar nombre"}
+                              </button>
+                            </div>
+                          ) : (
+                            <div style={{ marginTop: 12, borderTop: "1px solid #f2f0e9", paddingTop: 12 }}>
+                              <div style={{ fontSize: 11.5, fontWeight: 600, color: NAVY, marginBottom: 6 }}>Agregar más fondos</div>
+                              <input
+                                style={inputStyle}
+                                value={marcaAsocQuery}
+                                onChange={(e) => setMarcaAsocQuery(e.target.value)}
+                                placeholder={`Buscar por ISIN o nombre (ej: "${fila.marca.nombre.split(" ")[0]}")`}
+                              />
+                              {marcaAsocResultados.length > 0 && (
+                                <div style={{ marginTop: 8, maxHeight: 220, overflowY: "auto", border: "1px solid #eae7dc", borderRadius: 6 }}>
+                                  {marcaAsocResultados.map((f) => (
+                                    <label key={f.isin} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 12.5, borderBottom: "1px solid #f2f0e9", cursor: "pointer" }}>
+                                      <input type="checkbox" checked={!!marcaAsocSeleccionados[f.isin]} onChange={() => toggleFondoAsoc(f)} />
+                                      {f.logo_url && <img src={f.logo_url} alt="" style={{ height: 16, opacity: f.logo_url === fila.logo_url ? 1 : 0.5 }} />}
+                                      <b>{f.isin}</b> — {f.nombre}
+                                      {f.logo_url && f.logo_url !== fila.logo_url && <span style={{ color: "#b23b3b", fontSize: 11 }}>(ya tiene otro logo)</span>}
+                                    </label>
+                                  ))}
+                                </div>
+                              )}
+                              {Object.keys(marcaAsocSeleccionados).length > 0 && (
+                                <div style={{ marginTop: 10, fontSize: 12, color: "#78776f" }}>
+                                  {Object.keys(marcaAsocSeleccionados).length} fondo(s) tildado(s): {Object.values(marcaAsocSeleccionados).join(", ")}
+                                </div>
+                              )}
+                              <button
+                                onClick={() => aplicarAsociacionMarca(fila.marca)}
+                                disabled={marcaAsocGuardando || Object.keys(marcaAsocSeleccionados).length === 0}
+                                style={{ marginTop: 10, padding: "8px 16px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12.5, cursor: "pointer" }}
+                              >
+                                {marcaAsocGuardando ? "Guardando…" : `Asociar a ${Object.keys(marcaAsocSeleccionados).length || ""} fondo(s)`}
+                              </button>
+                              {marcaAsocMensaje && <div style={{ marginTop: 8, fontSize: 12, color: marcaAsocMensaje.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{marcaAsocMensaje}</div>}
                             </div>
                           )}
-                          <button
-                            onClick={() => aplicarAsociacionMarca(m)}
-                            disabled={marcaAsocGuardando || Object.keys(marcaAsocSeleccionados).length === 0}
-                            style={{ marginTop: 10, padding: "8px 16px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12.5, cursor: "pointer" }}
-                          >
-                            {marcaAsocGuardando ? "Guardando…" : `Asociar a ${Object.keys(marcaAsocSeleccionados).length || ""} fondo(s)`}
-                          </button>
-                          {marcaAsocMensaje && <div style={{ marginTop: 8, fontSize: 12, color: marcaAsocMensaje.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{marcaAsocMensaje}</div>}
                         </div>
                       )}
                     </div>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
             )}
-
-            <input style={{ ...inputStyle, maxWidth: 360, marginBottom: 18 }} value={logosQuery} onChange={(e) => setLogosQuery(e.target.value)} placeholder="Filtrar por ISIN o nombre de fondo" />
-
-            {logosCargando && <div style={{ fontSize: 13, color: "#78776f" }}>Cargando…</div>}
-            {!logosCargando && logosGruposFiltrados.length === 0 && (
-              <div style={{ fontSize: 13, color: "#78776f" }}>No hay fondos con logo cargado{logosQuery ? " que coincidan con ese filtro" : ""}.</div>
-            )}
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
-              {logosGruposFiltrados.map((g) => (
-                <div key={g.logo_url} style={{
-                  background: "#fff", border: `1px solid ${g.fondos.length > 1 ? "#e0b96a" : "#eae7dc"}`, borderRadius: 8, padding: 14,
-                }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                    <img src={g.logo_url} alt="" style={{ height: 32, maxWidth: 120, objectFit: "contain" }} />
-                    {g.fondos.length > 1 && (
-                      <span style={{ fontSize: 10.5, color: "#8a6d1f", background: "#fbf1de", borderRadius: 4, padding: "2px 6px", fontWeight: 600 }}>
-                        {g.fondos.length} fondos comparten este logo
-                      </span>
-                    )}
-                  </div>
-                  {g.fondos.map((f) => (
-                    <div key={f.isin} style={{ fontSize: 12, padding: "4px 0", borderTop: "1px solid #f2f0e9" }}>
-                      <b>{f.isin}</b> — {f.nombre}
-                    </div>
-                  ))}
-                  {marcaPorLogoUrl(g.logo_url) ? (
-                    <div style={{ fontSize: 11, color: TEAL, marginTop: 8, borderTop: "1px solid #f2f0e9", paddingTop: 8 }}>
-                      ✓ Ya buscable como marca "{marcaPorLogoUrl(g.logo_url).nombre}"
-                    </div>
-                  ) : (
-                    <div style={{ display: "flex", gap: 6, marginTop: 8, borderTop: "1px solid #f2f0e9", paddingTop: 8 }}>
-                      <input
-                        style={{ ...miniInputStyle, padding: "5px 8px", fontSize: 11.5 }}
-                        placeholder="Nombre de marca (ej: MFS)"
-                        value={marcaNombrePorGrupo[g.logo_url] || ""}
-                        onChange={(e) => setMarcaNombrePorGrupo((prev) => ({ ...prev, [g.logo_url]: e.target.value }))}
-                      />
-                      <button
-                        onClick={() => guardarGrupoComoMarca(g.logo_url)}
-                        disabled={marcaGuardandoGrupo === g.logo_url || !(marcaNombrePorGrupo[g.logo_url] || "").trim()}
-                        style={{ padding: "5px 10px", borderRadius: 5, border: "none", background: NAVY, color: "#fff", fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}
-                      >
-                        {marcaGuardandoGrupo === g.logo_url ? "…" : "Guardar"}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
           </div>
         ) : (
         <div style={{ padding: "28px 36px", display: "flex", gap: 24 }}>
