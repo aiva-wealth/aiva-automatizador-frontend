@@ -209,6 +209,8 @@ export default function App() {
   const [marcaAsocSeleccionados, setMarcaAsocSeleccionados] = useState({}); // isin -> nombre
   const [marcaAsocGuardando, setMarcaAsocGuardando] = useState(false);
   const [marcaAsocMensaje, setMarcaAsocMensaje] = useState("");
+  const [marcaFusionSeleccion, setMarcaFusionSeleccion] = useState({}); // logo_url -> id de marca elegida
+  const [marcaFusionando, setMarcaFusionando] = useState("");
 
   async function cargarRegistro() {
     setRegistroCargando(true);
@@ -538,6 +540,27 @@ export default function App() {
   async function quitarFondoDeGrupo(isin) {
     await supabase.from("fondos").update({ logo_url: null }).eq("isin", isin);
     await cargarAuditoriaLogos();
+  }
+
+  // Fusiona un grupo "sin nombre" (fondos que llegaron con su propio logo
+  // individual, de antes del sistema de marcas) con una marca YA existente
+  // — reasigna esos fondos a la URL de la marca elegida. No borra nada: el
+  // grupo "sin nombre" simplemente desaparece de la lista porque ningún
+  // fondo vuelve a apuntar a esa URL vieja.
+  async function fusionarConMarcaExistente(fila) {
+    const marcaId = marcaFusionSeleccion[fila.logo_url];
+    if (!marcaId) return;
+    const marca = marcasTodas.find((m) => String(m.id) === String(marcaId));
+    if (!marca) return;
+    setMarcaFusionando(fila.logo_url);
+    try {
+      const isins = fila.fondos.map((f) => f.isin);
+      await supabase.from("fondos").update({ logo_url: marca.logo_url }).in("isin", isins);
+      await cargarAuditoriaLogos();
+      setMarcaFusionSeleccion((prev) => ({ ...prev, [fila.logo_url]: "" }));
+    } finally {
+      setMarcaFusionando("");
+    }
   }
 
   // --- Importación de marcas en bloque ---
@@ -1186,21 +1209,43 @@ export default function App() {
                           ))}
 
                           {fila.tipo === "sinNombre" ? (
-                            <div style={{ display: "flex", gap: 6, marginTop: 12, borderTop: "1px solid #f2f0e9", paddingTop: 12 }}>
-                              <input
-                                style={{ ...miniInputStyle, padding: "6px 9px" }}
-                                placeholder="Nombre de marca (ej: MFS)"
-                                value={marcaNombrePorGrupo[fila.logo_url] || ""}
-                                onChange={(e) => setMarcaNombrePorGrupo((prev) => ({ ...prev, [fila.logo_url]: e.target.value }))}
-                              />
-                              <button
-                                onClick={() => guardarGrupoComoMarca(fila.logo_url)}
-                                disabled={marcaGuardandoGrupo === fila.logo_url || !(marcaNombrePorGrupo[fila.logo_url] || "").trim()}
-                                style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}
-                              >
-                                {marcaGuardandoGrupo === fila.logo_url ? "…" : "Guardar nombre"}
-                              </button>
-                            </div>
+                            <>
+                              {marcasTodas.length > 0 && (
+                                <div style={{ display: "flex", gap: 6, marginTop: 12, borderTop: "1px solid #f2f0e9", paddingTop: 12, alignItems: "center" }}>
+                                  <select
+                                    style={{ ...miniInputStyle, padding: "6px 9px", flex: 1 }}
+                                    value={marcaFusionSeleccion[fila.logo_url] || ""}
+                                    onChange={(e) => setMarcaFusionSeleccion((prev) => ({ ...prev, [fila.logo_url]: e.target.value }))}
+                                  >
+                                    <option value="">Fusionar con una marca ya existente…</option>
+                                    {marcasTodas.map((m) => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+                                  </select>
+                                  <button
+                                    onClick={() => fusionarConMarcaExistente(fila)}
+                                    disabled={marcaFusionando === fila.logo_url || !marcaFusionSeleccion[fila.logo_url]}
+                                    style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}
+                                  >
+                                    {marcaFusionando === fila.logo_url ? "…" : "Fusionar"}
+                                  </button>
+                                </div>
+                              )}
+                              <div style={{ fontSize: 10.5, color: "#a5a399", margin: "6px 0" }}>o, si es una marca nueva de verdad:</div>
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <input
+                                  style={{ ...miniInputStyle, padding: "6px 9px" }}
+                                  placeholder="Nombre de marca (ej: MFS)"
+                                  value={marcaNombrePorGrupo[fila.logo_url] || ""}
+                                  onChange={(e) => setMarcaNombrePorGrupo((prev) => ({ ...prev, [fila.logo_url]: e.target.value }))}
+                                />
+                                <button
+                                  onClick={() => guardarGrupoComoMarca(fila.logo_url)}
+                                  disabled={marcaGuardandoGrupo === fila.logo_url || !(marcaNombrePorGrupo[fila.logo_url] || "").trim()}
+                                  style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}
+                                >
+                                  {marcaGuardandoGrupo === fila.logo_url ? "…" : "Guardar nombre"}
+                                </button>
+                              </div>
+                            </>
                           ) : (
                             <div style={{ marginTop: 12, borderTop: "1px solid #f2f0e9", paddingTop: 12 }}>
                               <div style={{ fontSize: 11.5, fontWeight: 600, color: NAVY, marginBottom: 6 }}>Agregar más fondos</div>
