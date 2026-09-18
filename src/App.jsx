@@ -1809,6 +1809,19 @@ export default function App() {
               )}
 
               <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 12, marginBottom: 18 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: NAVY, marginBottom: 4 }}>¿Falta un instrumento en la biblioteca?</div>
+                <div style={{ fontSize: 11.5, color: "#78776f", marginBottom: 8 }}>
+                  Subí el Excel base (Fondos / Fondos distributivos / Acciones / Bonos) para cargarlo de una — o{" "}
+                  <button onClick={descargarPlantillaBase} style={{ border: "none", background: "none", color: TEAL, fontSize: 11.5, cursor: "pointer", textDecoration: "underline", padding: 0 }}>descargá la plantilla en blanco</button> si todavía no la tenés.
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input type="file" accept=".xlsx,.xls" onChange={(e) => handleImportBibliotecaBase(e.target.files[0])} style={{ ...miniInputStyle, padding: "6px", flex: 1 }} />
+                  {baseImportCargando && <span style={{ fontSize: 11.5, color: "#78776f" }}>Cargando…</span>}
+                </div>
+                {baseImportResumen && <div style={{ marginTop: 8, fontSize: 11.5, color: baseImportResumen.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{baseImportResumen}</div>}
+              </div>
+
+              <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 12, marginBottom: 18 }}>
                 <div style={{ fontSize: 12, color: "#78776f", marginBottom: 8 }}>¿No está en la biblioteca? Puede ser cualquier cosa — una acción, un bono, una alternativa. Se agrega acá y queda guardado para la próxima vez.</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8 }}>
                   <input style={miniInputStyle} placeholder="Nombre (ej: Apple Inc / AAPL)" value={nuevoActivoNombre} onChange={(e) => setNuevoActivoNombre(e.target.value)} />
