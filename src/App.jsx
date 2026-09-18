@@ -727,9 +727,49 @@ export default function App() {
     }
   }
 
+  // Genera y descarga la plantilla del Excel base (4 pestañas) desde acá
+  // mismo — no depende de un archivo guardado en ningún lado, así siempre
+  // está actualizada con las columnas que el importador realmente espera.
+  function descargarPlantillaBase() {
+    const specs = [
+      {
+        sheet: "Fondos",
+        cols: ["ISIN", "Nombre", "Sector", "Categoría", "Rend. YTD", "Rend. 1 año", "Rend. 3 años", "Rend. 5 años", "TER"],
+        nota: "Categoría: Renta Fija / Multi Activo / Renta Variable / Alternativos Líquidos. Rendimientos y TER en % (ej: 3.8 = 3,8%). Completar desde la fila 3 — la fila 2 es el header, no tocar.",
+        ejemplo: ["LU2750480548", "Wellington Total Credit", "Global Flexible", "Renta Fija", 0.22, 3.8, 6.1, 3.2, 1.25],
+      },
+      {
+        sheet: "Fondos distributivos",
+        cols: ["ISIN", "Nombre", "Sector", "Categoría", "Rend. YTD", "Rend. 1 año", "Rend. 3 años", "Rend. 5 años", "TER", "Dividendo (%)", "Frec. Dividendo"],
+        nota: "Igual que la pestaña Fondos + Dividendo (%) y Frec. Dividendo (Mensual / Trimestral / Anual, etc.). Son fondos que pagan renta periódica.",
+        ejemplo: ["IE00B8K7V925", "PIMCO GIS Income Fund", "Global", "Renta Fija", 0.39, 5.15, 5.87, 2.56, 1.45, 6.31, "Mensual"],
+      },
+      {
+        sheet: "Acciones",
+        cols: ["Ticker", "Nombre", "Sector", "Categoría", "Rend. YTD", "Rend. 1 año", "Rend. 3 años", "Rend. 5 años"],
+        nota: "Acciones individuales — sin TER (no tienen costo de gestión).",
+        ejemplo: ["ORCL", "Oracle Corp", "Tecnología", "Renta Variable", -21.45, -34.83, 10.67, 12.71],
+      },
+      {
+        sheet: "Bonos",
+        cols: ["ISIN", "Nombre", "Sector", "Categoría", "Cupón (%)", "Rating S&P", "Price", "Yield", "Maturity"],
+        nota: "Bonos individuales. Maturity en formato AAAA-MM-DD. Price y Yield al momento de cargar el dato.",
+        ejemplo: ["US03938LBE39", "Arcelormittal SA", "Basic Materials", "Renta Fija", 6.55, "BBB", 102.27, 4.79, "2027-11-29"],
+      },
+    ];
+
+    const wb = XLSX.utils.book_new();
+    specs.forEach(({ sheet, cols, nota, ejemplo }) => {
+      const ws = XLSX.utils.aoa_to_sheet([[nota], cols, ejemplo]);
+      ws["!cols"] = cols.map((c) => ({ wch: c === "Nombre" ? 32 : Math.max(14, c.length + 4) }));
+      ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: cols.length - 1 } }];
+      XLSX.utils.book_append_sheet(wb, ws, sheet);
+    });
+    XLSX.writeFile(wb, "Biblioteca_instrumentos_AIVA.xlsx");
+  }
+
   // --- Importación masiva ---
-  async function handleImportJson(file) {
-    if (!file) return;
+  async function handleImportJson(file) {    if (!file) return;
     const texto = await file.text();
     const data = JSON.parse(texto);
     setImportPreparando(true);
@@ -1415,7 +1455,7 @@ export default function App() {
 
             <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 12, margin: "12px 0" }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: NAVY, marginBottom: 4 }}>Importar biblioteca base (Fondos / Fondos distributivos / Acciones / Bonos)</div>
-              <div style={{ fontSize: 11, color: "#78776f", marginBottom: 8 }}>El Excel con las 4 pestañas que mantiene el equipo — carga directo por ISIN/Ticker, sin pedir revisión.</div>
+              <div style={{ fontSize: 11, color: "#78776f", marginBottom: 8 }}>El Excel con las 4 pestañas que mantiene el equipo — carga directo por ISIN/Ticker, sin pedir revisión. <button onClick={descargarPlantillaBase} style={{ border: "none", background: "none", color: TEAL, fontSize: 11, cursor: "pointer", textDecoration: "underline", padding: 0 }}>Descargar plantilla en blanco</button></div>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <input type="file" accept=".xlsx,.xls" onChange={(e) => handleImportBibliotecaBase(e.target.files[0])} style={{ ...miniInputStyle, padding: "6px", flex: 1 }} />
                 {baseImportCargando && <span style={{ fontSize: 11.5, color: "#78776f" }}>Cargando…</span>}
@@ -1809,4 +1849,94 @@ export default function App() {
                   </div>
                   <div style={{ fontSize: 10.5, color: "#9b9993", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.4 }}>Rendimientos históricos (%, opcional)</div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
-                    <MiniField label="
+                    <MiniField label="YTD">
+                      <input type="number" style={miniInputStyle} value={a.ytd} onChange={(e) => updateProposedField(i, "ytd", +e.target.value)} />
+                    </MiniField>
+                    <MiniField label="1 año">
+                      <input type="number" style={miniInputStyle} value={a.y1} onChange={(e) => updateProposedField(i, "y1", +e.target.value)} />
+                    </MiniField>
+                    <MiniField label="3 años">
+                      <input type="number" style={miniInputStyle} value={a.y3} onChange={(e) => updateProposedField(i, "y3", +e.target.value)} />
+                    </MiniField>
+                    <MiniField label="5 años">
+                      <input type="number" style={miniInputStyle} value={a.y5} onChange={(e) => updateProposedField(i, "y5", +e.target.value)} />
+                    </MiniField>
+                  </div>
+                </div>
+              ))}
+            </Section>
+          )}
+
+          {stepName === "Descripción de activos" && (
+            <Section title="Descripción de activos" subtitle="Elegí a mano, por categoría, qué fondos van en cada página de descripción — con su logo, descripción y factsheet ya asociados desde la biblioteca. No depende de lo que hayas cargado en Portafolio propuesto.">
+              <button onClick={prellenarDescDesdePortafolio} style={{ marginBottom: 16, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>Rellenar automático desde Portafolio propuesto</button>
+
+              <Field label="Buscar fondo en la biblioteca">
+                <div style={{ display: "flex", gap: 8 }}>
+                  <select style={{ ...miniInputStyle, maxWidth: 220 }} value={descCategoriaDestino} onChange={(e) => setDescCategoriaDestino(e.target.value)}>
+                    {DESC_CATEGORIAS.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <input style={inputStyle} value={descQuery} onChange={(e) => setDescQuery(e.target.value)} placeholder="Buscar por ISIN o nombre, se agrega a la categoría de arriba" />
+                </div>
+              </Field>
+              {descResultados.length > 0 && (
+                <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginBottom: 18, maxHeight: 180, overflowY: "auto" }}>
+                  {descResultados.map((f) => (
+                    <div key={f.isin} onClick={() => addDescManual(f)} style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #f2f0e9", display: "flex", alignItems: "center", gap: 8 }}>
+                      {f.logo_url && <img src={f.logo_url} alt="" style={{ height: 18 }} />}
+                      <b>{f.isin}</b> — {f.nombre} {!f.descripcion && <span style={{ color: "#b23b3b" }}>(sin descripción todavía)</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {DESC_CATEGORIAS.map((cat) => (
+                <div key={cat} style={{ marginBottom: 22 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: NAVY, marginBottom: 8 }}>{cat} ({descSeleccion[cat].length})</div>
+                  {descSeleccion[cat].length === 0 && <div style={{ fontSize: 12, color: "#a5a399", marginBottom: 8 }}>Sin fondos elegidos — esta página no va a aparecer en el documento.</div>}
+                  {descSeleccion[cat].map((f) => (
+                    <div key={f.isin} style={{ display: "flex", alignItems: "center", gap: 10, background: "#fff", border: "1px solid #eae7dc", borderRadius: 6, padding: "8px 10px", marginBottom: 6 }}>
+                      {f.logo_url ? <img src={f.logo_url} alt="" style={{ height: 24 }} /> : <div style={{ width: 24 }} />}
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13 }}>{f.nombre}</div>
+                        <div style={{ fontSize: 11, color: f.descripcion ? "#78776f" : "#b23b3b" }}>{f.descripcion ? f.descripcion.slice(0, 90) + (f.descripcion.length > 90 ? "…" : "") : "Sin descripción cargada en la biblioteca todavía"}</div>
+                      </div>
+                      <button onClick={() => quitarDescManual(cat, f.isin)} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer" }}>Quitar</button>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </Section>
+          )}
+
+          {stepName === "Comentarios" && (
+            <Section title="Comentarios">
+              <textarea value={comentarios} onChange={(e) => setComentarios(e.target.value)} rows={8} style={{ ...inputStyle, resize: "vertical" }} />
+            </Section>
+          )}
+
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 24, paddingTop: 18, borderTop: "1px solid #eae7dc" }}>
+            <button disabled={step === 0} onClick={() => setStep((s) => s - 1)} style={{ padding: "9px 18px", borderRadius: 6, border: "1px solid #d8d5cc", background: "#fff", opacity: step === 0 ? 0.4 : 1 }}>← Atrás</button>
+            {step < currentSteps.length - 1 ? (
+              <button onClick={() => setStep((s) => s + 1)} style={{ padding: "9px 18px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontWeight: 600 }}>Siguiente →</button>
+            ) : (
+              <button onClick={handleGenerar} disabled={generando} style={{ padding: "9px 20px", borderRadius: 6, border: "none", background: TEAL, color: "#fff", fontWeight: 600 }}>
+                {generando ? "Generando…" : "Generar PPT + PDF"}
+              </button>
+            )}
+          </div>
+
+          {error && <div style={{ marginTop: 14, color: "#b23b3b", fontSize: 13 }}>{error}</div>}
+          {resultado && (
+            <div style={{ marginTop: 14, background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 16 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 8 }}>¡Listo!</div>
+              <a href={resultado.pptx_url} target="_blank" rel="noreferrer" style={{ marginRight: 16, color: NAVY }}>Descargar PPTX</a>
+              {resultado.pdf_url && <a href={resultado.pdf_url} target="_blank" rel="noreferrer" style={{ color: NAVY }}>Descargar PDF</a>}
+            </div>
+          )}
+        </div>
+      </div>
+      )}
+    </div>
+  );
+}
