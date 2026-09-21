@@ -2,11 +2,13 @@ import React, { useState, useEffect } from "react";
 import { supabase } from "./supabaseClient";
 import * as XLSX from "xlsx";
 
-const NAVY = "#1D2E49";
+const NAVY = "#16223A";
 const CREAM = "#F5F1EC";
 const TEAL = "#557787";
 const LIGHTBLUE = "#D1DFEA";
 const GREY = "#9B9B93";
+const CARD_SHADOW = "0 1px 2px rgba(20,20,20,0.04), 0 8px 24px rgba(20,20,20,0.04)";
+const RADIUS = 14;
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
 
@@ -102,11 +104,11 @@ Object.keys(COLUMNAS_POR_TIPO).forEach((t) => {
 
 function Section({ title, subtitle, children }) {
   return (
-    <div style={{ marginBottom: 28 }}>
-      <h3 style={{ color: NAVY, fontSize: 13, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", marginBottom: subtitle ? 4 : 14 }}>
+    <div style={{ background: "#fff", borderRadius: RADIUS, boxShadow: CARD_SHADOW, padding: "24px 26px", marginBottom: 22 }}>
+      <h3 style={{ color: NAVY, fontSize: 17, fontWeight: 700, marginTop: 0, marginBottom: subtitle ? 4 : 18 }}>
         {title}
       </h3>
-      {subtitle && <p style={{ fontSize: 12.5, color: "#78776f", marginTop: 0, marginBottom: 16 }}>{subtitle}</p>}
+      {subtitle && <p style={{ fontSize: 12.5, color: "#8b8a80", marginTop: 0, marginBottom: 18, lineHeight: 1.5 }}>{subtitle}</p>}
       {children}
     </div>
   );
@@ -115,7 +117,7 @@ function Section({ title, subtitle, children }) {
 function Field({ label, children, hint }) {
   return (
     <div style={{ marginBottom: 14 }}>
-      <label style={{ display: "block", fontSize: 12.5, color: "#5b5b55", marginBottom: 5 }}>{label}</label>
+      <label style={{ display: "block", fontSize: 12.5, color: "#5b5b55", marginBottom: 5, fontWeight: 600 }}>{label}</label>
       {children}
       {hint && <div style={{ fontSize: 11, color: "#a5a399", marginTop: 3 }}>{hint}</div>}
     </div>
@@ -128,18 +130,28 @@ function Field({ label, children, hint }) {
 function MiniField({ label, children }) {
   return (
     <div>
-      <div style={{ fontSize: 10.5, color: "#9b9993", marginBottom: 3, textTransform: "uppercase", letterSpacing: 0.4 }}>{label}</div>
+      <div style={{ fontSize: 10, color: "#9b9993", marginBottom: 3, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700 }}>{label}</div>
       {children}
     </div>
   );
 }
 
 const inputStyle = {
-  width: "100%", padding: "9px 11px", borderRadius: 6, border: "1px solid #d8d5cc",
+  width: "100%", padding: "10px 13px", borderRadius: 10, border: "1px solid #E4E1D6",
   fontSize: 14, fontFamily: "inherit", boxSizing: "border-box", background: "#fff",
 };
 
-const miniInputStyle = { ...inputStyle, padding: "7px 9px", fontSize: 13 };
+const miniInputStyle = { ...inputStyle, padding: "7px 10px", borderRadius: 8, fontSize: 13 };
+
+const primaryButtonStyle = {
+  padding: "10px 20px", borderRadius: 10, border: "none", background: TEAL, color: "#fff",
+  fontWeight: 700, fontSize: 13.5, cursor: "pointer", boxShadow: "0 4px 12px rgba(85,119,135,0.3)",
+};
+
+const secondaryButtonStyle = {
+  padding: "10px 18px", borderRadius: 10, border: "1px solid #DEDAD0", background: "#fff",
+  color: "#3A3A38", fontWeight: 600, fontSize: 13, cursor: "pointer",
+};
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -222,6 +234,8 @@ export default function App() {
   const [vista, setVista] = useState("nueva"); // "nueva" | "registro" | "biblioteca"
   const [registro, setRegistro] = useState([]);
   const [registroCargando, setRegistroCargando] = useState(false);
+  const [registroSeleccionados, setRegistroSeleccionados] = useState({}); // id -> true
+  const [registroBusqueda, setRegistroBusqueda] = useState("");
 
   const [bibliotecaQuery, setBibliotecaQuery] = useState("");
   const [bibliotecaResultados, setBibliotecaResultados] = useState([]);
@@ -313,14 +327,62 @@ export default function App() {
   }
 
   async function cambiarStatus(id, nuevoStatus) {
-    await supabase.from("propuestas").update({ status: nuevoStatus }).eq("id", id);
+    const { error } = await supabase.from("propuestas").update({ status: nuevoStatus }).eq("id", id);
+    if (error) { alert("Error al cambiar el status: " + error.message); return; }
     setRegistro((prev) => prev.map((r) => r.id === id ? { ...r, status: nuevoStatus } : r));
   }
 
+  // OJO: supabase-js NO tira excepción si el delete falla (por RLS, por
+  // ejemplo) — hay que revisar "error" a mano. Antes esto sacaba la fila de
+  // la pantalla igual, aunque nunca se hubiera borrado de verdad en
+  // Supabase — por eso volvía a aparecer al recargar la página.
   async function eliminarPropuesta(id) {
     if (!window.confirm("¿Eliminar este registro? Esta acción no se puede deshacer (no borra el PPTX/PDF ya generado en Storage, solo la fila del registro).")) return;
-    await supabase.from("propuestas").delete().eq("id", id);
+    const { error } = await supabase.from("propuestas").delete().eq("id", id);
+    if (error) { alert("Error al eliminar: " + error.message); return; }
     setRegistro((prev) => prev.filter((r) => r.id !== id));
+    setRegistroSeleccionados((prev) => { const next = { ...prev }; delete next[id]; return next; });
+  }
+
+  async function eliminarPropuestasSeleccionadas() {
+    const ids = Object.keys(registroSeleccionados).filter((id) => registroSeleccionados[id]);
+    if (ids.length === 0) return;
+    if (!window.confirm(`¿Eliminar ${ids.length} registro(s)? Esta acción no se puede deshacer.`)) return;
+    const { error } = await supabase.from("propuestas").delete().in("id", ids);
+    if (error) { alert("Error al eliminar: " + error.message); return; }
+    setRegistro((prev) => prev.filter((r) => !ids.includes(String(r.id))));
+    setRegistroSeleccionados({});
+  }
+
+  function toggleRegistroSeleccionado(id) {
+    setRegistroSeleccionados((prev) => ({ ...prev, [id]: !prev[id] }));
+  }
+
+  function toggleRegistroSeleccionarTodos(idsVisibles) {
+    setRegistroSeleccionados((prev) => {
+      const todosMarcados = idsVisibles.every((id) => prev[id]);
+      const next = { ...prev };
+      idsVisibles.forEach((id) => { next[id] = !todosMarcados; });
+      return next;
+    });
+  }
+
+  function descargarRegistroExcel(filas) {
+    const datos = filas.map((r) => ({
+      Fecha: new Date(r.created_at).toLocaleDateString(),
+      Tipo: r.tipo === "Revision" ? "Revisión" : "Propuesta",
+      "Cliente / Cuenta": r.tipo === "Revision" ? (r.nro_cuenta || "") : (r.cliente || ""),
+      "Hecha por": r.creado_por,
+      Asesor: r.repcode,
+      Monto: r.monto || "",
+      Status: r.status,
+      PPTX: r.archivo_pptx_url || "",
+      PDF: r.archivo_pdf_url || "",
+    }));
+    const ws = XLSX.utils.json_to_sheet(datos);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Registro");
+    XLSX.writeFile(wb, `Registro_propuestas_${new Date().toISOString().slice(0, 10)}.xlsx`);
   }
 
   useEffect(() => {
@@ -1171,13 +1233,18 @@ export default function App() {
   // Toma lo que ya está cargado en Portafolio propuesto y lo vuelca en las
   // 3 categorías de descripción — punto de partida rápido, después se
   // puede seguir ajustando a mano.
+  // Solo trae del Portafolio propuesto los que YA tienen descripción, foto
+  // y factsheet completos en la biblioteca — si a alguno le falta uno de
+  // los tres, se lo salta en vez de meterlo con huecos en blanco (para eso
+  // sigue estando la carga manual, que sí avisa qué le falta).
   function prellenarDescDesdePortafolio() {
     const grupos = { "Renta Fija & Multi Activo": [], "Renta Variable": [], "Alternativos Líquidos": [] };
     proposedAssets.forEach((a) => {
       const destino = (a.categoria === "Renta Fija" || a.categoria === "Multi Activo") ? "Renta Fija & Multi Activo"
         : a.categoria === "Renta Variable" ? "Renta Variable"
         : a.categoria === "Alternativos Líquidos" ? "Alternativos Líquidos" : null;
-      if (destino && a.isin && !grupos[destino].some((f) => f.isin === a.isin)) {
+      const completo = a.descripcion && a.logo_url && a.factsheet_url;
+      if (destino && a.isin && completo && !grupos[destino].some((f) => f.isin === a.isin)) {
         grupos[destino].push({ isin: a.isin, nombre: a.nombre, descripcion: a.descripcion, factsheet_url: a.factsheet_url, logo_url: a.logo_url });
       }
     });
@@ -1208,8 +1275,8 @@ export default function App() {
   }
 
   // Importa el excel "Open Tax Lots" de StoneX para el portafolio actual de
-  // una Propuesta nueva (a diferencia de Revisión, acá solo hace falta
-  // nombre + importe — el % se calcula solo sobre el total).
+  // una Propuesta nueva — nombre, importe y costo (para poder calcular el
+  // rendimiento solo, igual que en Revisión).
   async function handleExcelImportPropuestaActual(file) {
     if (!file) return;
     const buf = await file.arrayBuffer();
@@ -1221,8 +1288,10 @@ export default function App() {
       .map((r) => {
         const cantidad = Number(r["Quantity"]) || 0;
         const usdPrice = Number(r["USD Price"]) || 0;
+        const unitCost = Number(r["Unit Cost"]) || 0;
         const importe = Math.round(Number(r["Mkt Value"]) || (usdPrice * cantidad) || 0);
-        return { nombre: r["Description"] || "", importe };
+        const costo = Math.round(Number(r["Adjusted Cost"]) || (unitCost * cantidad) || 0);
+        return { nombre: r["Description"] || "", importe, costo };
       })
       .filter((a) => a.nombre);
     setCurrentAssets((prev) => [...prev, ...nuevos]);
@@ -1360,13 +1429,19 @@ export default function App() {
         ? revisionAssets.map((a) => ({ isin: a.isin, nombre: a.nombre, pct: a.pct, costo: a.costo, valor_actual: a.valor_actual, rendimiento: a.rendimiento }))
         : (() => {
             const total = currentAssets.reduce((s, a) => s + (Number(a.importe) || 0), 0) + (Number(cashActualPropuesta) || 0);
-            const filas = currentAssets.map((a) => ({
-              nombre: a.nombre,
-              importe: Math.round(Number(a.importe) || 0),
-              pct: total ? Math.round((Number(a.importe) || 0) / total * 100) : 0,
-            }));
+            const filas = currentAssets.map((a) => {
+              const costo = Number(a.costo) || 0;
+              const importe = Math.round(Number(a.importe) || 0);
+              return {
+                nombre: a.nombre,
+                importe,
+                pct: total ? Math.round(importe / total * 100) : 0,
+                costo,
+                rendimiento: costo ? +(((importe - costo) / costo) * 100).toFixed(1) : 0,
+              };
+            });
             if (cashActualPropuesta) {
-              filas.push({ nombre: "Cash", importe: Math.round(Number(cashActualPropuesta)), pct: total ? Math.round(Number(cashActualPropuesta) / total * 100) : 0 });
+              filas.push({ nombre: "Cash", importe: Math.round(Number(cashActualPropuesta)), pct: total ? Math.round(Number(cashActualPropuesta) / total * 100) : 0, costo: 0, rendimiento: 0 });
             }
             return filas;
           })(),
@@ -1452,6 +1527,16 @@ export default function App() {
 
   const totalRevisionPreview = currentAssets.reduce((s, a) => s + (Number(a.valor_actual) || 0), 0) + Number(cashValorRevision || 0);
 
+  const registroFiltrado = registroBusqueda.trim().length < 1
+    ? registro
+    : registro.filter((r) => {
+        const q = registroBusqueda.toLowerCase();
+        return (r.repcode || "").toLowerCase().includes(q)
+          || (r.nro_cuenta || "").toLowerCase().includes(q)
+          || (r.cliente || "").toLowerCase().includes(q)
+          || (r.creado_por || "").toLowerCase().includes(q);
+      });
+
   // Tabla de revisión de la importación del Excel base — se usa en los dos
   // lugares donde está el cargador (Biblioteca de fondos y Portafolio
   // propuesto), agrupada por tipo igual que la tabla de Portafolio
@@ -1518,16 +1603,39 @@ export default function App() {
   }
 
   return (
-    <div style={{ fontFamily: "Montserrat, sans-serif", background: CREAM, minHeight: "100vh" }}>
-      <div style={{ background: NAVY, color: "#fff", padding: "14px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontSize: 14, fontWeight: 600 }}>Automatizador de propuestas</span>
-        <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-          <button onClick={() => setVista("nueva")} style={{ background: "none", border: "none", color: vista === "nueva" ? "#fff" : "#9fb0c9", fontWeight: vista === "nueva" ? 600 : 400, cursor: "pointer", fontSize: 13 }}>Nueva propuesta</button>
-          <button onClick={() => setVista("registro")} style={{ background: "none", border: "none", color: vista === "registro" ? "#fff" : "#9fb0c9", fontWeight: vista === "registro" ? 600 : 400, cursor: "pointer", fontSize: 13 }}>Registro</button>
-          <button onClick={() => setVista("biblioteca")} style={{ background: "none", border: "none", color: vista === "biblioteca" ? "#fff" : "#9fb0c9", fontWeight: vista === "biblioteca" ? 600 : 400, cursor: "pointer", fontSize: 13 }}>Biblioteca de fondos</button>
-          <span style={{ fontSize: 12.5, opacity: 0.85 }}>{usuario}{asesorSel ? ` · ${repcode} — ${asesorSel.nombre}` : ""}</span>
+    <div style={{ fontFamily: "Montserrat, sans-serif", background: CREAM, minHeight: "100vh", display: "flex" }}>
+      <div style={{ width: 234, flexShrink: 0, background: NAVY, display: "flex", flexDirection: "column", padding: "26px 16px", minHeight: "100vh", boxSizing: "border-box" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 8px 26px 8px" }}>
+          <div style={{ width: 28, height: 28, borderRadius: 8, background: TEAL, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, color: "#fff", fontSize: 13 }}>A</div>
+          <div style={{ color: "#fff", fontWeight: 700, fontSize: 14 }}>AIVA</div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          {[
+            { key: "nueva", label: "Nueva propuesta" },
+            { key: "registro", label: "Registro" },
+            { key: "biblioteca", label: "Biblioteca de fondos" },
+          ].map((item) => (
+            <button
+              key={item.key}
+              onClick={() => setVista(item.key)}
+              style={{
+                display: "flex", alignItems: "center", gap: 10, padding: "10px 13px", borderRadius: 10,
+                background: vista === item.key ? "rgba(255,255,255,0.08)" : "transparent",
+                color: vista === item.key ? "#fff" : "#AEB9C9",
+                fontWeight: vista === item.key ? 600 : 500, fontSize: 13, border: "none", cursor: "pointer", textAlign: "left",
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <div style={{ marginTop: "auto", padding: 13, borderRadius: 10, background: "rgba(255,255,255,0.06)" }}>
+          <div style={{ color: "#fff", fontSize: 12.5, fontWeight: 600 }}>{usuario}</div>
+          {asesorSel && <div style={{ color: "#8492A6", fontSize: 11, marginTop: 2 }}>{repcode} — {asesorSel.nombre}</div>}
         </div>
       </div>
+
+      <div style={{ flex: 1, minWidth: 0 }}>
 
       {vista === "biblioteca" ? (
         importModo ? (
@@ -1854,21 +1962,48 @@ export default function App() {
         )
       ) : vista === "registro" ? (
         <div style={{ padding: "28px 36px" }}>
-          <h3 style={{ color: NAVY, fontSize: 16, marginBottom: 16 }}>Registro de propuestas</h3>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+            <h3 style={{ color: NAVY, fontSize: 16, margin: 0 }}>Registro de propuestas</h3>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <input
+                style={{ ...inputStyle, width: 280 }}
+                value={registroBusqueda}
+                onChange={(e) => setRegistroBusqueda(e.target.value)}
+                placeholder="Buscar por asesor, cuenta/cliente o quién la hizo"
+              />
+              <button onClick={() => descargarRegistroExcel(registroFiltrado)} style={{ padding: "9px 14px", borderRadius: 6, border: "1px solid #d8d5cc", background: "#fff", fontSize: 12.5, cursor: "pointer", whiteSpace: "nowrap" }}>Descargar Excel</button>
+            </div>
+          </div>
+
+          {Object.values(registroSeleccionados).some(Boolean) && (
+            <div style={{ marginBottom: 12 }}>
+              <button onClick={eliminarPropuestasSeleccionadas} style={{ padding: "8px 14px", borderRadius: 6, border: "none", background: "#b23b3b", color: "#fff", fontSize: 12.5, cursor: "pointer" }}>
+                Eliminar {Object.values(registroSeleccionados).filter(Boolean).length} seleccionado(s)
+              </button>
+            </div>
+          )}
+
           {registroCargando && <div style={{ fontSize: 13, color: "#78776f" }}>Cargando…</div>}
           {!registroCargando && registro.length === 0 && <div style={{ fontSize: 13, color: "#78776f" }}>Todavía no hay propuestas generadas.</div>}
-          {!registroCargando && registro.length > 0 && (
+          {!registroCargando && registro.length > 0 && registroFiltrado.length === 0 && <div style={{ fontSize: 13, color: "#78776f" }}>Ningún registro coincide con ese filtro.</div>}
+          {!registroCargando && registroFiltrado.length > 0 && (
             <table style={{ width: "100%", borderCollapse: "collapse", background: "#fff", fontSize: 13 }}>
               <thead>
                 <tr style={{ background: NAVY, color: "#fff" }}>
+                  <th style={{ padding: "8px 10px", textAlign: "left" }}>
+                    <input type="checkbox" checked={registroFiltrado.every((r) => registroSeleccionados[r.id])} onChange={() => toggleRegistroSeleccionarTodos(registroFiltrado.map((r) => r.id))} />
+                  </th>
                   {["Fecha", "Tipo", "Cliente / Cuenta", "Hecha por", "Asesor", "Monto", "Status", "Archivos", ""].map((h) => (
                     <th key={h} style={{ padding: "8px 10px", textAlign: "left" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {registro.map((r) => (
-                  <tr key={r.id} style={{ borderBottom: "1px solid #eae7dc" }}>
+                {registroFiltrado.map((r) => (
+                  <tr key={r.id} style={{ borderBottom: "1px solid #eae7dc", background: registroSeleccionados[r.id] ? "#fbf6ee" : "transparent" }}>
+                    <td style={{ padding: "8px 10px" }}>
+                      <input type="checkbox" checked={!!registroSeleccionados[r.id]} onChange={() => toggleRegistroSeleccionado(r.id)} />
+                    </td>
                     <td style={{ padding: "8px 10px" }}>{new Date(r.created_at).toLocaleDateString()}</td>
                     <td style={{ padding: "8px 10px" }}>{r.tipo === "Revision" ? "Revisión" : "Propuesta"}</td>
                     <td style={{ padding: "8px 10px" }}>{r.tipo === "Revision" ? (r.nro_cuenta || "—") : (r.cliente || "—")}</td>
@@ -1897,19 +2032,24 @@ export default function App() {
           )}
         </div>
       ) : (
-      <div style={{ display: "flex" }}>
-        <div style={{ width: 210, padding: "24px 0", borderRight: "1px solid #e4e1d6" }}>
+      <div style={{ padding: "28px 36px" }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 24 }}>
           {currentSteps.map((s, i) => (
             <div key={s} onClick={() => setStep(i)} style={{
-              padding: "10px 22px", fontSize: 13.5, cursor: "pointer",
-              color: i === step ? NAVY : "#8c8b83", fontWeight: i === step ? 600 : 400,
-              borderLeft: i === step ? `3px solid ${NAVY}` : "3px solid transparent",
-              background: i === step ? "#fff" : "transparent",
-            }}>{i + 1}. {s}</div>
+              display: "flex", alignItems: "center", gap: 7, padding: "7px 14px 7px 7px", borderRadius: 999, cursor: "pointer",
+              background: i === step ? TEAL : "#EDEAE2",
+            }}>
+              <div style={{
+                width: 19, height: 19, borderRadius: "50%", fontSize: 10.5, fontWeight: 700,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: i === step ? NAVY : "#DEDAD0", color: i === step ? "#fff" : "#8B8A80",
+              }}>{i + 1}</div>
+              <div style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap", color: i === step ? "#fff" : "#8B8A80" }}>{s}</div>
+            </div>
           ))}
         </div>
 
-        <div style={{ flex: 1, padding: "28px 36px", maxWidth: 720 }}>
+        <div style={{ flex: 1, maxWidth: 760 }}>
           {stepName === "Portada" && (
             <Section title="Portada">
               <Field label="Tipo de documento">
@@ -2127,20 +2267,22 @@ export default function App() {
           )}
 
           {stepName === "Portafolio actual" && tipo === "Propuesta" && (
-            <Section title="Portafolio actual" subtitle="El % se calcula solo sobre el total (activos + cash) — no hace falta tipearlo.">
+            <Section title="Portafolio actual" subtitle="El % y el rendimiento se calculan solos — % sobre el total (activos + cash), rendimiento sobre costo vs. importe actual.">
               <Field label="Cash (USD)" hint="StoneX no incluye el efectivo en el excel de posiciones — hay que cargarlo aparte.">
                 <input type="number" style={{ ...inputStyle, maxWidth: 220 }} value={cashActualPropuesta} onChange={(e) => setCashActualPropuesta(+e.target.value)} />
               </Field>
-              <Field label="Importar desde Excel (Open Tax Lots de StoneX)" hint="Toma Description y Mkt Value de la hoja 'By Security' y agrega una fila por activo.">
+              <Field label="Importar desde Excel (Open Tax Lots de StoneX)" hint="Toma Description, Mkt Value y Adjusted Cost de la hoja 'By Security' y agrega una fila por activo.">
                 <input type="file" accept=".xlsx,.xls" onChange={(e) => handleExcelImportPropuestaActual(e.target.files[0])} style={{ ...inputStyle, padding: "8px" }} />
               </Field>
-              <button onClick={() => setCurrentAssets((prev) => [...prev, { nombre: "", importe: 0 }])} style={{ marginBottom: 12, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar activo a mano</button>
+              <button onClick={() => setCurrentAssets((prev) => [...prev, { nombre: "", importe: 0, costo: 0 }])} style={{ marginBottom: 12, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar activo a mano</button>
               {(() => {
                 const total = currentAssets.reduce((s, a) => s + (Number(a.importe) || 0), 0) + (Number(cashActualPropuesta) || 0);
                 return currentAssets.map((a, i) => {
                   const pct = total ? Math.round((Number(a.importe) || 0) / total * 100) : 0;
+                  const costo = Number(a.costo) || 0;
+                  const rendimiento = costo ? (((Number(a.importe) || 0) - costo) / costo * 100).toFixed(1) : "0.0";
                   return (
-                    <div key={i} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr auto", gap: 10, marginBottom: 8, alignItems: "end" }}>
+                    <div key={i} style={{ display: "grid", gridTemplateColumns: "1.6fr 0.7fr 1fr 1fr 0.9fr auto", gap: 10, marginBottom: 8, alignItems: "end" }}>
                       <MiniField label="Nombre">
                         <input style={miniInputStyle} value={a.nombre} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, nombre: e.target.value } : x))} />
                       </MiniField>
@@ -2149,6 +2291,12 @@ export default function App() {
                       </MiniField>
                       <MiniField label="Importe USD">
                         <input style={miniInputStyle} type="number" value={a.importe} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, importe: +e.target.value } : x))} />
+                      </MiniField>
+                      <MiniField label="Costo USD">
+                        <input style={miniInputStyle} type="number" value={a.costo || 0} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, costo: +e.target.value } : x))} />
+                      </MiniField>
+                      <MiniField label="Rendimiento">
+                        <div style={{ ...miniInputStyle, background: CREAM, fontWeight: 600, color: rendimiento >= 0 ? "#3a7d44" : "#b23b3b" }}>{rendimiento}%</div>
                       </MiniField>
                       <button onClick={() => setCurrentAssets((prev) => prev.filter((_, j) => j !== i))} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer" }}>Quitar</button>
                     </div>
@@ -2319,7 +2467,8 @@ export default function App() {
 
           {stepName === "Descripción de activos" && (
             <Section title="Descripción de activos" subtitle="Elegí a mano, por categoría, qué fondos van en cada página de descripción — con su logo, descripción y factsheet ya asociados desde la biblioteca. No depende de lo que hayas cargado en Portafolio propuesto.">
-              <button onClick={prellenarDescDesdePortafolio} style={{ marginBottom: 16, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>Rellenar automático desde Portafolio propuesto</button>
+              <button onClick={prellenarDescDesdePortafolio} style={{ marginBottom: 4, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>Rellenar automático desde Portafolio propuesto</button>
+              <div style={{ fontSize: 11, color: "#a5a399", marginBottom: 16 }}>Solo trae los que ya tienen logo, descripción y factsheet completos en la biblioteca — al que le falte alguno, se salta (para agregarlo igual, buscalo abajo a mano).</div>
 
               <Field label="Buscar fondo en la biblioteca">
                 <div style={{ display: "flex", gap: 8 }}>
@@ -2365,12 +2514,12 @@ export default function App() {
             </Section>
           )}
 
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 24, paddingTop: 18, borderTop: "1px solid #eae7dc" }}>
-            <button disabled={step === 0} onClick={() => setStep((s) => s - 1)} style={{ padding: "9px 18px", borderRadius: 6, border: "1px solid #d8d5cc", background: "#fff", opacity: step === 0 ? 0.4 : 1 }}>← Atrás</button>
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 24, paddingTop: 18 }}>
+            <button disabled={step === 0} onClick={() => setStep((s) => s - 1)} style={{ ...secondaryButtonStyle, opacity: step === 0 ? 0.4 : 1 }}>← Atrás</button>
             {step < currentSteps.length - 1 ? (
-              <button onClick={() => setStep((s) => s + 1)} style={{ padding: "9px 18px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontWeight: 600 }}>Siguiente →</button>
+              <button onClick={() => setStep((s) => s + 1)} style={{ ...primaryButtonStyle, background: NAVY, boxShadow: "0 4px 12px rgba(22,34,58,0.25)" }}>Siguiente →</button>
             ) : (
-              <button onClick={handleGenerar} disabled={generando} style={{ padding: "9px 20px", borderRadius: 6, border: "none", background: TEAL, color: "#fff", fontWeight: 600 }}>
+              <button onClick={handleGenerar} disabled={generando} style={primaryButtonStyle}>
                 {generando ? "Generando…" : "Generar PPT + PDF"}
               </button>
             )}
@@ -2387,6 +2536,7 @@ export default function App() {
         </div>
       </div>
       )}
+      </div>
     </div>
   );
 }
