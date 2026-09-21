@@ -37,6 +37,60 @@ const DEFAULT_TEAM = [
 
 const CATEGORIAS = ["Renta Fija", "Multi Activo", "Renta Variable", "Alternativos Líquidos"];
 
+// Columnas por tipo de instrumento — mismo set y mismo orden que arma
+// engine_propuesto_extra.py en el PPTX, para que la tabla en pantalla sea
+// un espejo real de lo que va a salir en el documento. "fijo: true" son
+// columnas que siempre se muestran (no se pueden ocultar ni reordenar).
+// "calculado: true" es de solo lectura, se deriva de otros campos.
+const COLUMNAS_POR_TIPO = {
+  fondo: [
+    { key: "isin", label: "Código", tipo: "text", fijo: true },
+    { key: "nombre", label: "Nombre", tipo: "text", fijo: true },
+    { key: "sector", label: "Sector", tipo: "text" },
+    { key: "ytd", label: "Rend. YTD", tipo: "number" },
+    { key: "y1", label: "Rend. 1 año", tipo: "number" },
+    { key: "y3", label: "Rend. 3 años", tipo: "number" },
+    { key: "y5", label: "Rend. 5 años", tipo: "number" },
+    { key: "ter", label: "TER", tipo: "number" },
+  ],
+  fondo_distributivo: [
+    { key: "isin", label: "Código", tipo: "text", fijo: true },
+    { key: "nombre", label: "Nombre", tipo: "text", fijo: true },
+    { key: "sector", label: "Sector", tipo: "text" },
+    { key: "dividendo_pct", label: "Dividendo (%)", tipo: "number" },
+    { key: "frecuencia_dividendo", label: "Frec. Dividendo", tipo: "text" },
+    { key: "ytd", label: "Rend. YTD", tipo: "number" },
+    { key: "y1", label: "Rend. 1 año", tipo: "number" },
+    { key: "y3", label: "Rend. 3 años", tipo: "number" },
+    { key: "y5", label: "Rend. 5 años", tipo: "number" },
+    { key: "dividendo_anual", label: "Dividendo Anual", tipo: "number", calculado: true },
+    { key: "ter", label: "TER", tipo: "number" },
+  ],
+  accion: [
+    { key: "isin", label: "Ticker", tipo: "text", fijo: true },
+    { key: "nombre", label: "Nombre", tipo: "text", fijo: true },
+    { key: "sector", label: "Sector", tipo: "text" },
+    { key: "ytd", label: "Rend. YTD", tipo: "number" },
+    { key: "y1", label: "Rend. 1 año", tipo: "number" },
+    { key: "y3", label: "Rend. 3 años", tipo: "number" },
+    { key: "y5", label: "Rend. 5 años", tipo: "number" },
+  ],
+  bono: [
+    { key: "isin", label: "Código", tipo: "text", fijo: true },
+    { key: "nombre", label: "Nombre", tipo: "text", fijo: true },
+    { key: "sector", label: "Sector", tipo: "text" },
+    { key: "cupon_pct", label: "Cupón (%)", tipo: "number" },
+    { key: "rating", label: "Rating S&P", tipo: "text" },
+    { key: "price", label: "Price", tipo: "number" },
+    { key: "yield_pct", label: "Yield", tipo: "number" },
+    { key: "maturity", label: "Maturity", tipo: "date" },
+    { key: "cupon_anual", label: "Cupón Anual", tipo: "number", calculado: true },
+  ],
+};
+
+const TIPO_LABELS = { fondo: "Fondos", fondo_distributivo: "Fondos distributivos", accion: "Acciones", bono: "Bonos" };
+const TIPO_ORDEN = ["fondo", "fondo_distributivo", "accion", "bono"];
+
 function Section({ title, subtitle, children }) {
   return (
     <div style={{ marginBottom: 28 }}>
@@ -125,6 +179,19 @@ export default function App() {
   const [nuevoActivoNombre, setNuevoActivoNombre] = useState("");
   const [nuevoActivoIsin, setNuevoActivoIsin] = useState("");
   const [comentarios, setComentarios] = useState("");
+
+  // --- Columnas visibles/orden por tipo de instrumento en "Portafolio
+  // propuesto" (no se guarda en Supabase, es solo cómo se ve mientras se
+  // arma esta propuesta puntual) — arranca con todas las columnas no-fijas
+  // visibles, en el orden por defecto.
+  const [columnasConfig, setColumnasConfig] = useState(() => {
+    const init = {};
+    Object.keys(COLUMNAS_POR_TIPO).forEach((t) => {
+      init[t] = COLUMNAS_POR_TIPO[t].filter((c) => !c.fijo).map((c) => c.key);
+    });
+    return init;
+  });
+  const [columnasAbiertoPara, setColumnasAbiertoPara] = useState(null); // tipo cuyo panel de columnas está abierto
 
   // --- Descripción de activos: selección manual por categoría, ---
   // independiente de lo que se haya cargado en Portafolio propuesto
@@ -873,7 +940,7 @@ export default function App() {
     const t = setTimeout(async () => {
       const { data } = await supabase
         .from("fondos")
-        .select("isin, nombre, sector, categoria, ter, uso_frecuente, descripcion, factsheet_url, logo_url")
+        .select("isin, nombre, sector, categoria, tipo_instrumento, ter, ytd, y1, y3, y5, dividendo_pct, frecuencia_dividendo, cupon_pct, rating, price, yield_pct, maturity, uso_frecuente, descripcion, factsheet_url, logo_url")
         .or(`isin.ilike.%${fondoQuery}%,nombre.ilike.%${fondoQuery}%`)
         .order("uso_frecuente", { ascending: false })
         .limit(8);
@@ -883,9 +950,40 @@ export default function App() {
   }, [fondoQuery]);
 
   function addProposedAsset(fondo) {
-    setProposedAssets((prev) => [...prev, { ...fondo, categoria: fondo.categoria || "Renta Variable", pct: 0, monto: 0, ytd: 0, y1: 0, y3: 0, y5: 0 }]);
+    const tipo = fondo.tipo_instrumento || "fondo";
+    setProposedAssets((prev) => [...prev, {
+      ...fondo,
+      tipo_instrumento: tipo,
+      categoria: fondo.categoria || "Renta Variable",
+      pct: 0, monto: 0,
+      ytd: fondo.ytd || 0, y1: fondo.y1 || 0, y3: fondo.y3 || 0, y5: fondo.y5 || 0,
+      ter: fondo.ter ?? null,
+      dividendo_pct: fondo.dividendo_pct || 0, frecuencia_dividendo: fondo.frecuencia_dividendo || "",
+      cupon_pct: fondo.cupon_pct || 0, rating: fondo.rating || "", price: fondo.price || 0,
+      yield_pct: fondo.yield_pct || 0, maturity: fondo.maturity || "",
+    }]);
     setFondoQuery("");
     setFondoResultados([]);
+  }
+
+  // --- Columnas visibles/orden de la tabla de Portafolio propuesto ---
+  function toggleColumnaVisible(tipo, key) {
+    setColumnasConfig((prev) => {
+      const actual = prev[tipo];
+      const nueva = actual.includes(key) ? actual.filter((k) => k !== key) : [...actual, key];
+      return { ...prev, [tipo]: nueva };
+    });
+  }
+
+  function moverColumna(tipo, key, direccion) {
+    setColumnasConfig((prev) => {
+      const actual = [...prev[tipo]];
+      const idx = actual.indexOf(key);
+      const nuevoIdx = idx + direccion;
+      if (idx === -1 || nuevoIdx < 0 || nuevoIdx >= actual.length) return prev;
+      [actual[idx], actual[nuevoIdx]] = [actual[nuevoIdx], actual[idx]];
+      return { ...prev, [tipo]: actual };
+    });
   }
 
   async function toggleFavorito(idx) {
@@ -904,7 +1002,7 @@ export default function App() {
   // esta propuesta.
   async function agregarActivoNuevo() {
     if (!nuevoActivoNombre.trim() || !nuevoActivoIsin.trim()) return;
-    const nuevoFondo = { isin: nuevoActivoIsin.trim(), nombre: nuevoActivoNombre.trim(), uso_frecuente: false };
+    const nuevoFondo = { isin: nuevoActivoIsin.trim(), nombre: nuevoActivoNombre.trim(), uso_frecuente: false, tipo_instrumento: "accion" };
     await supabase.from("fondos").upsert(nuevoFondo, { onConflict: "isin" });
     addProposedAsset(nuevoFondo);
     setNuevoActivoNombre("");
@@ -1042,12 +1140,38 @@ export default function App() {
   function buildConfig(proposedAssetsOverride, descSeleccionOverride) {
     const assetsAUsar = proposedAssetsOverride || proposedAssets;
     const descAUsar = descSeleccionOverride || descSeleccion;
+    // La tabla "estándar" del PPT (build_portafolio_propuesto) es la que
+    // usan Fondos y Acciones — Acciones comparte el mismo layout de
+    // columnas, con TER en blanco. Bonos y Fondos distributivos arman sus
+    // propias slides aparte (ver más abajo), así que quedan afuera de acá.
     const categorias = CATEGORIAS.map((label) => ({
       label: label === "Renta Fija" ? "Fondos Renta Fija" : label === "Multi Activo" ? "Fondo Multi Activo" : label === "Renta Variable" ? "Fondo Renta Variable" : "Fondos Alternativos Líquidos",
-      fondos: assetsAUsar.filter((a) => a.categoria === label).map((a) => ({
-        isin: a.isin, nombre: a.nombre, sector: a.sector || "", ytd: a.ytd || 0, y1: a.y1 || 0, y3: a.y3 || 0, y5: a.y5 || 0, pct: a.pct, monto: a.monto, ter: a.ter || 0,
-      })),
+      fondos: assetsAUsar
+        .filter((a) => a.categoria === label && (a.tipo_instrumento === "fondo" || a.tipo_instrumento === "accion" || !a.tipo_instrumento))
+        .map((a) => ({
+          isin: a.isin, nombre: a.nombre, sector: a.sector || "", ytd: a.ytd || 0, y1: a.y1 || 0, y3: a.y3 || 0, y5: a.y5 || 0, pct: a.pct, monto: a.monto, ter: a.ter || 0,
+        })),
     })).filter((c) => c.fondos.length > 0);
+
+    // Bonos y Fondos distributivos: cada uno arma su propia página en el
+    // PPT (agregar_slide_bonos / agregar_slide_distributivos), solo si hay
+    // al menos uno cargado. Cupón anual y Dividendo anual se calculan acá
+    // mismo a partir del monto asignado, no vienen de la biblioteca.
+    const bonosPropuesto = assetsAUsar.filter((a) => a.tipo_instrumento === "bono").map((a) => ({
+      isin: a.isin, nombre: a.nombre, sector: a.sector || "",
+      cupon_pct: a.cupon_pct || 0, rating: a.rating || "", price: a.price || 0,
+      yield_pct: a.yield_pct || 0, maturity: a.maturity || "",
+      cupon_anual: Math.round((a.monto || 0) * (a.cupon_pct || 0) / 100),
+      pct: a.pct, monto: a.monto,
+    }));
+
+    const fondosDistributivosPropuesto = assetsAUsar.filter((a) => a.tipo_instrumento === "fondo_distributivo").map((a) => ({
+      isin: a.isin, nombre: a.nombre, sector: a.sector || "",
+      ytd: a.ytd || 0, y1: a.y1 || 0, y3: a.y3 || 0, y5: a.y5 || 0, ter: a.ter || 0,
+      dividendo_pct: a.dividendo_pct || 0, frecuencia_dividendo: a.frecuencia_dividendo || "",
+      dividendo_anual: Math.round((a.monto || 0) * (a.dividendo_pct || 0) / 100),
+      pct: a.pct, monto: a.monto,
+    }));
 
     const cashMonto = Number(cashManualPropuesta) || 0;
 
@@ -1118,6 +1242,8 @@ export default function App() {
       asset_allocation_donut1: donut1,
       asset_allocation_donut2: donut2,
       fondos_por_categoria: fondosPorCategoria,
+      bonos_propuesto: bonosPropuesto,
+      fondos_distributivos_propuesto: fondosDistributivosPropuesto,
       comentarios,
     };
   }
@@ -1840,43 +1966,106 @@ export default function App() {
                 );
               })()}
 
-              {proposedAssets.map((a, i) => (
-                <div key={i} style={{ background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 12, marginBottom: 10 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                    <div style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{a.nombre}</div>
-                    <button onClick={() => toggleFavorito(i)} title="Marcar/desmarcar como fondo frecuente" style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: a.uso_frecuente ? TEAL : "#d8d5cc", padding: 0 }}>★</button>
-                    <button onClick={() => setProposedAssets((prev) => prev.filter((_, j) => j !== i))} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer" }}>Quitar</button>
+              {TIPO_ORDEN.filter((tipo) => proposedAssets.some((a) => (a.tipo_instrumento || "fondo") === tipo)).map((tipo) => {
+                const filas = proposedAssets.map((a, i) => ({ a, i })).filter(({ a }) => (a.tipo_instrumento || "fondo") === tipo);
+                const colsOrdenadas = [
+                  ...COLUMNAS_POR_TIPO[tipo].filter((c) => c.fijo),
+                  ...columnasConfig[tipo].map((key) => COLUMNAS_POR_TIPO[tipo].find((c) => c.key === key)).filter(Boolean),
+                ];
+                return (
+                  <div key={tipo} style={{ marginBottom: 26 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: NAVY }}>{TIPO_LABELS[tipo]} ({filas.length})</div>
+                      <button onClick={() => setColumnasAbiertoPara((prev) => (prev === tipo ? null : tipo))} style={{ border: "none", background: "none", color: TEAL, fontSize: 11.5, cursor: "pointer", textDecoration: "underline" }}>
+                        {columnasAbiertoPara === tipo ? "Cerrar columnas" : "Elegir columnas"}
+                      </button>
+                    </div>
+
+                    {columnasAbiertoPara === tipo && (
+                      <div style={{ background: "#fff", border: "1px solid #eae7dc", borderRadius: 6, padding: 10, marginBottom: 10, maxWidth: 320 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: NAVY, marginBottom: 6 }}>Tildar para mostrar — flechas para ordenar</div>
+                        {COLUMNAS_POR_TIPO[tipo].filter((c) => !c.fijo).map((c) => {
+                          const idx = columnasConfig[tipo].indexOf(c.key);
+                          const visible = idx !== -1;
+                          return (
+                            <div key={c.key} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 0" }}>
+                              <input type="checkbox" checked={visible} onChange={() => toggleColumnaVisible(tipo, c.key)} />
+                              <span style={{ fontSize: 12, flex: 1 }}>{c.label}</span>
+                              {visible && (
+                                <>
+                                  <button onClick={() => moverColumna(tipo, c.key, -1)} disabled={idx === 0} style={{ border: "none", background: "none", cursor: idx === 0 ? "default" : "pointer", color: idx === 0 ? "#ccc" : "#78776f", fontSize: 12, padding: "0 3px" }}>▲</button>
+                                  <button onClick={() => moverColumna(tipo, c.key, 1)} disabled={idx === columnasConfig[tipo].length - 1} style={{ border: "none", background: "none", cursor: idx === columnasConfig[tipo].length - 1 ? "default" : "pointer", color: idx === columnasConfig[tipo].length - 1 ? "#ccc" : "#78776f", fontSize: 12, padding: "0 3px" }}>▼</button>
+                                </>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <div style={{ overflowX: "auto", background: "#fff", border: "1px solid #eae7dc", borderRadius: 8 }}>
+                      <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ background: CREAM }}>
+                            <th style={{ padding: "6px 8px", textAlign: "left", whiteSpace: "nowrap" }}>Categoría</th>
+                            <th style={{ padding: "6px 8px", textAlign: "left", whiteSpace: "nowrap" }}>%</th>
+                            <th style={{ padding: "6px 8px", textAlign: "left", whiteSpace: "nowrap" }}>Monto (USD)</th>
+                            {colsOrdenadas.map((c) => (
+                              <th key={c.key} style={{ padding: "6px 8px", textAlign: "left", whiteSpace: "nowrap" }}>{c.label}</th>
+                            ))}
+                            <th></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filas.map(({ a, i }) => (
+                            <tr key={i} style={{ borderTop: "1px solid #f2f0e9" }}>
+                              <td style={{ padding: "4px 8px" }}>
+                                <select style={{ ...miniInputStyle, padding: "4px 6px", fontSize: 11.5 }} value={a.categoria} onChange={(e) => updateProposedField(i, "categoria", e.target.value)}>
+                                  {CATEGORIAS.map((c) => <option key={c} value={c}>{c}</option>)}
+                                </select>
+                              </td>
+                              <td style={{ padding: "4px 8px" }}>
+                                <input type="number" style={{ ...miniInputStyle, padding: "4px 6px", width: 60, fontSize: 11.5 }} value={a.pct} onChange={(e) => updateProposedField(i, "pct", +e.target.value)} />
+                              </td>
+                              <td style={{ padding: "4px 8px" }}>
+                                <input type="number" style={{ ...miniInputStyle, padding: "4px 6px", width: 90, fontSize: 11.5 }} value={a.monto} onChange={(e) => updateProposedField(i, "monto", +e.target.value)} />
+                              </td>
+                              {colsOrdenadas.map((c) => (
+                                <td key={c.key} style={{ padding: "4px 8px" }}>
+                                  {c.fijo ? (
+                                    <span>{a[c.key]}</span>
+                                  ) : c.calculado ? (
+                                    <span style={{ color: "#78776f" }}>
+                                      {c.key === "dividendo_anual"
+                                        ? Math.round((a.monto || 0) * (a.dividendo_pct || 0) / 100).toLocaleString()
+                                        : c.key === "cupon_anual"
+                                        ? Math.round((a.monto || 0) * (a.cupon_pct || 0) / 100).toLocaleString()
+                                        : ""}
+                                    </span>
+                                  ) : c.tipo === "date" ? (
+                                    <input type="date" style={{ ...miniInputStyle, padding: "4px 6px", fontSize: 11.5 }} value={a[c.key] || ""} onChange={(e) => updateProposedField(i, c.key, e.target.value)} />
+                                  ) : (
+                                    <input
+                                      type={c.tipo === "number" ? "number" : "text"}
+                                      style={{ ...miniInputStyle, padding: "4px 6px", width: c.tipo === "number" ? 70 : 100, fontSize: 11.5 }}
+                                      value={a[c.key] ?? ""}
+                                      onChange={(e) => updateProposedField(i, c.key, c.tipo === "number" ? +e.target.value : e.target.value)}
+                                    />
+                                  )}
+                                </td>
+                              ))}
+                              <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}>
+                                <button onClick={() => toggleFavorito(i)} title="Marcar/desmarcar como fondo frecuente" style={{ border: "none", background: "none", cursor: "pointer", fontSize: 14, color: a.uso_frecuente ? TEAL : "#d8d5cc", padding: 0, marginRight: 8 }}>★</button>
+                                <button onClick={() => setProposedAssets((prev) => prev.filter((_, j) => j !== i))} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 11, cursor: "pointer" }}>Quitar</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1.3fr 0.8fr 1fr", gap: 10, marginBottom: 8 }}>
-                    <MiniField label="Categoría">
-                      <select style={miniInputStyle} value={a.categoria} onChange={(e) => updateProposedField(i, "categoria", e.target.value)}>
-                        {CATEGORIAS.map((c) => <option key={c} value={c}>{c}</option>)}
-                      </select>
-                    </MiniField>
-                    <MiniField label="% del monto">
-                      <input type="number" style={miniInputStyle} value={a.pct} onChange={(e) => updateProposedField(i, "pct", +e.target.value)} />
-                    </MiniField>
-                    <MiniField label="Monto (USD)">
-                      <input type="number" style={miniInputStyle} value={a.monto} onChange={(e) => updateProposedField(i, "monto", +e.target.value)} />
-                    </MiniField>
-                  </div>
-                  <div style={{ fontSize: 10.5, color: "#9b9993", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.4 }}>Rendimientos históricos (%, opcional)</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
-                    <MiniField label="YTD">
-                      <input type="number" style={miniInputStyle} value={a.ytd} onChange={(e) => updateProposedField(i, "ytd", +e.target.value)} />
-                    </MiniField>
-                    <MiniField label="1 año">
-                      <input type="number" style={miniInputStyle} value={a.y1} onChange={(e) => updateProposedField(i, "y1", +e.target.value)} />
-                    </MiniField>
-                    <MiniField label="3 años">
-                      <input type="number" style={miniInputStyle} value={a.y3} onChange={(e) => updateProposedField(i, "y3", +e.target.value)} />
-                    </MiniField>
-                    <MiniField label="5 años">
-                      <input type="number" style={miniInputStyle} value={a.y5} onChange={(e) => updateProposedField(i, "y5", +e.target.value)} />
-                    </MiniField>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </Section>
           )}
 
