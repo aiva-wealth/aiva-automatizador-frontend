@@ -174,6 +174,7 @@ export default function App() {
   const [nroCuenta, setNroCuenta] = useState("");
   const [incluirPagina2, setIncluirPagina2] = useState(false);
   const [team, setTeam] = useState(DEFAULT_TEAM);
+  const [equipoExpandidoId, setEquipoExpandidoId] = useState(null);
   const [incluirValueProp, setIncluirValueProp] = useState(true);
   const [perfil, setPerfil] = useState("Balanceado");
 
@@ -718,6 +719,16 @@ export default function App() {
     return Number.isNaN(n) ? null : n;
   }
 
+  // El "%" puede venir como número entero (10 = 10%, formato que usa el
+  // resto de la app) o como fracción de Excel (0.10 = 10%, si la celda
+  // viene formateada como porcentaje desde otra planilla). Se asume
+  // fracción solo si es un valor entre 0 y 1 — una posición real de
+  // portafolio casi nunca pesa menos de 1%.
+  function normalizarPct(v) {
+    if (v === null || v === undefined) return null;
+    return v > 0 && v < 1 ? v * 100 : v;
+  }
+
   // Parsea el Excel base de instrumentos (3 pestañas: Fondos, Acciones,
   // Bonos — Fondos distributivos NO es una pestaña aparte, ver
   // descargarPlantillaBase) y devuelve la lista de instrumentos leídos, sin
@@ -753,6 +764,12 @@ export default function App() {
           nombre: obj["Nombre"] ? String(obj["Nombre"]).trim() : "",
           sector: obj["Sector"] || "",
           categoria: obj["Categoría"] || CATEGORIAS[0],
+          // % e Inversión (USD): se leen si están — quien los use decide
+          // qué hacer si faltan (la Biblioteca los ignora directamente, ya
+          // que "fondos" no tiene esas columnas; Portafolio propuesto los
+          // usa o los calcula, ver handleImportExcelPropuesta).
+          pct: normalizarPct(excelValueToNumber(obj["%"])),
+          monto: excelValueToNumber(obj["Inversión (USD)"]),
         };
 
         if (sheet === "Fondos") {
@@ -805,10 +822,11 @@ export default function App() {
   }
 
   // --- Importador de Portafolio propuesto: NO toca la biblioteca ni
-  // Supabase — agrega los instrumentos directo a ESTA propuesta, con % y
-  // monto en 0 para completar a mano, igual que si los hubieras buscado y
-  // agregado uno por uno. Aparecen ya mismo en las tablas editables de
-  // abajo, agrupados por tipo, con su categoría correspondiente. ---
+  // Supabase — agrega los instrumentos directo a ESTA propuesta. Si el
+  // Excel trae % y/o Inversión (USD), se usan tal cual; si falta uno de
+  // los dos, se calcula solo a partir del otro y del "Monto total a
+  // invertir" ya cargado en este paso. Si el cash todavía no está
+  // definido, se completa solo con lo que sobre del monto total. ---
   async function handleImportExcelPropuesta(file) {
     if (!file) return;
     setPropuestaImportResumen("");
@@ -818,13 +836,42 @@ export default function App() {
         setPropuestaImportResumen("No se encontró ninguna fila para importar — revisá que el archivo tenga las pestañas Fondos/Acciones/Bonos con datos desde la fila 3.");
         return;
       }
-      const nuevos = filas.map((f) => ({
-        ...f,
-        pct: 0, monto: 0,
-        rating: f.rating || "", price: f.price || 0, yield_pct: f.yield_pct || 0, maturity: f.maturity || "",
-      }));
-      setProposedAssets((prev) => [...prev, ...nuevos]);
-      setPropuestaImportResumen(`✓ ${nuevos.length} instrumento(s) agregado(s) a esta propuesta — completá % o monto en la tabla de abajo.`);
+      const nuevos = filas.map((f) => {
+        let pct = f.pct;
+        let monto = f.monto;
+        // falta uno de los dos: se calcula a partir del otro + el monto
+        // total a invertir de esta propuesta
+        if ((monto === null || monto === undefined) && pct !== null && montoInvertir) {
+          monto = Math.round((pct / 100) * montoInvertir);
+        }
+        if ((pct === null || pct === undefined) && monto !== null && montoInvertir) {
+          pct = +(100 * monto / montoInvertir).toFixed(1);
+        }
+        return {
+          ...f,
+          pct: pct || 0, monto: monto || 0,
+          rating: f.rating || "", price: f.price || 0, yield_pct: f.yield_pct || 0, maturity: f.maturity || "",
+        };
+      });
+
+      setProposedAssets((prev) => {
+        const todos = [...prev, ...nuevos];
+        // cash: si todavía no se cargó nada a mano, se completa solo con
+        // lo que falte para llegar al monto total, ahora que ya sabemos
+        // cuánto quedó asignado en instrumentos.
+        if (!cashManualPropuesta) {
+          const sumaMontos = todos.reduce((s, a) => s + (Number(a.monto) || 0), 0);
+          const cashCalculado = Math.max(Math.round(montoInvertir - sumaMontos), 0);
+          if (cashCalculado > 0) setCashManualPropuesta(cashCalculado);
+        }
+        return todos;
+      });
+
+      const huboCalculo = filas.some((f) => f.pct === null || f.monto === null);
+      setPropuestaImportResumen(
+        `✓ ${nuevos.length} instrumento(s) agregado(s) a esta propuesta.` +
+        (huboCalculo ? " Completé % o monto donde faltaba uno de los dos, a partir del monto total a invertir." : "")
+      );
     } catch (e) {
       setPropuestaImportResumen("Error al leer el archivo: " + (e.message || e));
     }
@@ -839,13 +886,17 @@ export default function App() {
   }
 
   // Recién acá se guarda de verdad en Supabase — todo lo de arriba fue
-  // solo lectura y edición en memoria.
+  // solo lectura y edición en memoria. OJO: baseImportPreview puede traer
+  // "pct"/"monto" (se leen del Excel para el caso de uso de Portafolio
+  // propuesto) — la tabla `fondos` no tiene esas columnas, así que acá se
+  // arma explícitamente solo con los campos que sí existen ahí.
   async function aplicarBaseImportPreview() {
     if (baseImportPreview.length === 0) return;
     setBaseImportCargando(true);
     setBaseImportResumen("");
     try {
-      const { error } = await supabase.from("fondos").upsert(baseImportPreview, { onConflict: "isin" });
+      const registrosParaGuardar = baseImportPreview.map(({ pct, monto, ...resto }) => resto);
+      const { error } = await supabase.from("fondos").upsert(registrosParaGuardar, { onConflict: "isin" });
       if (error) throw error;
       setBaseImportResumen(`✓ ${baseImportPreview.length} instrumento(s) cargado(s) a la biblioteca.`);
       setBaseImportPreview([]);
@@ -861,7 +912,7 @@ export default function App() {
   // está actualizada con las columnas que el importador realmente espera.
   function descargarPlantillaBase(incluirDividendos) {
     const categoriaNota = `Categoría: ${CATEGORIAS.join(" / ")}.`;
-    const notaComun = " % e Inversión (USD) NO se importan — son datos de cada propuesta puntual, no del instrumento en sí; están acá solo para que la planilla se parezca a la tabla del documento final. Dejalas en blanco tranquilo.";
+    const notaComun = " % e Inversión (USD): si subís este archivo en Portafolio propuesto, se usan (o se calculan solos entre sí y con el cash); si lo subís en Biblioteca de fondos, se ignoran — ahí no hacen falta.";
 
     const fondosCols = incluirDividendos
       ? ["%", "Código", "Nombre", "Sector", "Dividendo (%)", "Frec. Dividendo", "Rend. YTD", "Rend. 1 año", "Rend. 3 años", "Rend. 5 años", "Inversión (USD)", "Dividendo anual", "TER", "Categoría"]
@@ -1072,6 +1123,12 @@ export default function App() {
       [nuevo[idx], nuevo[destino]] = [nuevo[destino], nuevo[idx]];
       return nuevo;
     });
+  }
+
+  async function handleTeamFoto(id, file) {
+    if (!file) return;
+    const b64 = await fileToBase64(file);
+    setTeam((prev) => prev.map((x) => x.id === id ? { ...x, foto_base64: b64 } : x));
   }
 
   async function agregarActivoNuevo() {
@@ -1291,8 +1348,13 @@ export default function App() {
       // acá para no depender de que el usuario se acuerde de destildar a
       // alguien.
       // hasta 6 integrantes, en el orden que haya quedado en la lista —
-      // el backend ya arma la grilla de 3x2 con esa cantidad.
-      equipo: team.filter((m) => m.incluido).slice(0, 6).map((m) => ({ nombre: m.nombre, puesto: m.puesto, educacion: m.educacion })),
+      // el backend ya arma la grilla de 3x2 con esa cantidad. foto_base64
+      // solo viaja si se subió una nueva (si no, el backend hereda la foto
+      // original por nombre, o dibuja un círculo con las iniciales).
+      equipo: team.filter((m) => m.incluido).slice(0, 6).map((m) => ({
+        nombre: m.nombre, puesto: m.puesto, educacion: m.educacion,
+        ...(m.foto_base64 ? { foto_base64: m.foto_base64 } : {}),
+      })),
       perfil_riesgo: perfil,
       portafolio_actual: tipo === "Revision"
         ? revisionAssets.map((a) => ({ isin: a.isin, nombre: a.nombre, pct: a.pct, costo: a.costo, valor_actual: a.valor_actual, rendimiento: a.rendimiento }))
@@ -1894,32 +1956,49 @@ export default function App() {
           )}
 
           {stepName === "Equipo" && (
-            <Section title="Equipo" subtitle="Hasta 6 personas, en 2 filas de 3 (1-2-3 arriba, 4-5-6 abajo) según el orden de la lista. Agregá, sacá, editá y reordená con las flechas.">
-              {team.map((m, idx) => (
-                <div key={m.id} style={{ background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 12, marginBottom: 10 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                    <input type="checkbox" checked={m.incluido} onChange={() => setTeam((prev) => prev.map((x) => x.id === m.id ? { ...x, incluido: !x.incluido } : x))} />
-                    <span style={{ fontSize: 11, color: idx < 6 ? "#78776f" : "#b23b3b", flex: 1 }}>
-                      {idx < 6 ? `Posición ${idx + 1} de 6` : "No entra en el documento — solo los primeros 6 de la lista"}
-                    </span>
-                    <button onClick={() => moverTeam(idx, -1)} disabled={idx === 0} style={{ border: "none", background: "none", cursor: idx === 0 ? "default" : "pointer", color: idx === 0 ? "#ccc" : "#78776f", fontSize: 13, padding: "0 4px" }}>▲</button>
-                    <button onClick={() => moverTeam(idx, 1)} disabled={idx === team.length - 1} style={{ border: "none", background: "none", cursor: idx === team.length - 1 ? "default" : "pointer", color: idx === team.length - 1 ? "#ccc" : "#78776f", fontSize: 13, padding: "0 4px" }}>▼</button>
-                    <button onClick={() => setTeam((prev) => prev.filter((x) => x.id !== m.id))} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer" }}>Quitar</button>
+            <Section title="Equipo" subtitle="Hasta 6 personas, en 2 filas de 3 (1-2-3 arriba, 4-5-6 abajo) según el orden de la lista. Click en un nombre para editarlo. Agregá, sacá y reordená con las flechas.">
+              {team.map((m, idx) => {
+                const abierto = equipoExpandidoId === m.id;
+                return (
+                  <div key={m.id} style={{ background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, marginBottom: 10, overflow: "hidden" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: 12 }}>
+                      <input type="checkbox" checked={m.incluido} onChange={() => setTeam((prev) => prev.map((x) => x.id === m.id ? { ...x, incluido: !x.incluido } : x))} />
+                      <div onClick={() => setEquipoExpandidoId((prev) => (prev === m.id ? null : m.id))} style={{ flex: 1, cursor: "pointer" }}>
+                        <div style={{ fontSize: 13.5, fontWeight: 600 }}>{m.nombre || "(sin nombre — click para completar)"}</div>
+                        <div style={{ fontSize: 11.5, color: "#78776f" }}>{m.puesto}{idx < 6 ? ` · Posición ${idx + 1} de 6` : " · No entra en el documento (solo los primeros 6)"}</div>
+                      </div>
+                      <button onClick={() => moverTeam(idx, -1)} disabled={idx === 0} style={{ border: "none", background: "none", cursor: idx === 0 ? "default" : "pointer", color: idx === 0 ? "#ccc" : "#78776f", fontSize: 13, padding: "0 4px" }}>▲</button>
+                      <button onClick={() => moverTeam(idx, 1)} disabled={idx === team.length - 1} style={{ border: "none", background: "none", cursor: idx === team.length - 1 ? "default" : "pointer", color: idx === team.length - 1 ? "#ccc" : "#78776f", fontSize: 13, padding: "0 4px" }}>▼</button>
+                      <button onClick={() => setTeam((prev) => prev.filter((x) => x.id !== m.id))} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer" }}>Quitar</button>
+                    </div>
+
+                    {abierto && (
+                      <div style={{ padding: "0 12px 12px 12px", borderTop: "1px solid #f2f0e9" }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10, marginBottom: 8 }}>
+                          <MiniField label="Nombre">
+                            <input style={miniInputStyle} value={m.nombre} onChange={(e) => setTeam((prev) => prev.map((x) => x.id === m.id ? { ...x, nombre: e.target.value } : x))} />
+                          </MiniField>
+                          <MiniField label="Puesto">
+                            <input style={miniInputStyle} value={m.puesto} onChange={(e) => setTeam((prev) => prev.map((x) => x.id === m.id ? { ...x, puesto: e.target.value } : x))} />
+                          </MiniField>
+                        </div>
+                        <MiniField label="Educación">
+                          <input style={miniInputStyle} value={m.educacion} onChange={(e) => setTeam((prev) => prev.map((x) => x.id === m.id ? { ...x, educacion: e.target.value } : x))} />
+                        </MiniField>
+                        <div style={{ marginTop: 8 }}>
+                          <MiniField label="Foto (opcional — si no se sube, se usa la del template si el nombre coincide, o iniciales)">
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <input type="file" accept="image/*" onChange={(e) => handleTeamFoto(m.id, e.target.files[0])} style={{ ...miniInputStyle, padding: "6px", flex: 1 }} />
+                              {m.foto_base64 && <span style={{ fontSize: 11, color: TEAL }}>✓ foto cargada</span>}
+                            </div>
+                          </MiniField>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
-                    <MiniField label="Nombre">
-                      <input style={miniInputStyle} value={m.nombre} onChange={(e) => setTeam((prev) => prev.map((x) => x.id === m.id ? { ...x, nombre: e.target.value } : x))} />
-                    </MiniField>
-                    <MiniField label="Puesto">
-                      <input style={miniInputStyle} value={m.puesto} onChange={(e) => setTeam((prev) => prev.map((x) => x.id === m.id ? { ...x, puesto: e.target.value } : x))} />
-                    </MiniField>
-                  </div>
-                  <MiniField label="Educación">
-                    <input style={miniInputStyle} value={m.educacion} onChange={(e) => setTeam((prev) => prev.map((x) => x.id === m.id ? { ...x, educacion: e.target.value } : x))} />
-                  </MiniField>
-                </div>
-              ))}
-              <button onClick={() => setTeam((prev) => [...prev, { id: Date.now(), nombre: "", puesto: "", educacion: "", incluido: true }])} style={{ marginTop: 4, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar integrante</button>
+                );
+              })}
+              <button onClick={() => { const nuevoId = Date.now(); setTeam((prev) => [...prev, { id: nuevoId, nombre: "", puesto: "", educacion: "", incluido: true }]); setEquipoExpandidoId(nuevoId); }} style={{ marginTop: 4, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar integrante</button>
             </Section>
           )}
 
@@ -2103,7 +2182,7 @@ export default function App() {
               <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 12, marginBottom: 18 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: NAVY, marginBottom: 4 }}>Cargar instrumentos desde Excel para esta propuesta</div>
                 <div style={{ fontSize: 11.5, color: "#78776f", marginBottom: 8 }}>
-                  Subí el Excel base (Fondos / Acciones / Bonos) — se agregan directo a la tabla de abajo, con % y monto en 0 para completar a mano. No toca la Biblioteca de fondos.
+                  Subí el Excel base (Fondos / Acciones / Bonos) — se agregan directo a la tabla de abajo. Si el archivo trae % o Inversión (USD), se usan; si falta alguno de los dos, se calcula solo. No toca la Biblioteca de fondos.
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
                   <input type="checkbox" id="divid-portafolio" checked={descargaConDividendos} onChange={(e) => setDescargaConDividendos(e.target.checked)} />
