@@ -1290,10 +1290,9 @@ export default function App() {
       // equipo (no incluye a Belén); el de Revisión sí tiene 5. Se recorta
       // acá para no depender de que el usuario se acuerde de destildar a
       // alguien.
-      // el template hoy solo tiene 5 lugares armados a mano (queda
-      // pendiente pasar a la grilla 3x2 de 6 en el backend) — mientras
-      // tanto se recorta acá a 5 para no romper el documento actual.
-      equipo: team.filter((m) => m.incluido).slice(0, 5).map((m) => ({ nombre: m.nombre, puesto: m.puesto, educacion: m.educacion })),
+      // hasta 6 integrantes, en el orden que haya quedado en la lista —
+      // el backend ya arma la grilla de 3x2 con esa cantidad.
+      equipo: team.filter((m) => m.incluido).slice(0, 6).map((m) => ({ nombre: m.nombre, puesto: m.puesto, educacion: m.educacion })),
       perfil_riesgo: perfil,
       portafolio_actual: tipo === "Revision"
         ? revisionAssets.map((a) => ({ isin: a.isin, nombre: a.nombre, pct: a.pct, costo: a.costo, valor_actual: a.valor_actual, rendimiento: a.rendimiento }))
