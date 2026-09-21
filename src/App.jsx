@@ -91,6 +91,15 @@ const COLUMNAS_POR_TIPO = {
 const TIPO_LABELS = { fondo: "Fondos", fondo_distributivo: "Fondos distributivos", accion: "Acciones", bono: "Bonos" };
 const TIPO_ORDEN = ["fondo", "fondo_distributivo", "accion", "bono"];
 
+// Columnas para la tabla de revisión de la importación del Excel base —
+// mismas que COLUMNAS_POR_TIPO pero sin los campos calculados (dividendo
+// anual, cupón anual), que dependen de un monto de propuesta que acá no
+// existe (esto es la biblioteca, no una propuesta puntual).
+const LIBRERIA_COLUMNAS_POR_TIPO = {};
+Object.keys(COLUMNAS_POR_TIPO).forEach((t) => {
+  LIBRERIA_COLUMNAS_POR_TIPO[t] = COLUMNAS_POR_TIPO[t].filter((c) => !c.calculado);
+});
+
 function Section({ title, subtitle, children }) {
   return (
     <div style={{ marginBottom: 28 }}>
@@ -288,6 +297,7 @@ export default function App() {
   const [baseImportCargando, setBaseImportCargando] = useState(false);
   const [baseImportResumen, setBaseImportResumen] = useState("");
   const [descargaConDividendos, setDescargaConDividendos] = useState(false);
+  const [baseImportPreview, setBaseImportPreview] = useState([]); // [{tipo_instrumento, isin, nombre, sector, categoria, ...campos}] — revisable/editable antes de guardar
 
   async function cargarRegistro() {
     setRegistroCargando(true);
@@ -707,29 +717,27 @@ export default function App() {
     return Number.isNaN(n) ? null : n;
   }
 
-  // Sube el Excel base de instrumentos (3 pestañas: Fondos, Acciones,
-  // Bonos — Fondos distributivos NO es una pestaña aparte, ver
-  // descargarPlantillaBase). La fila 1 es una nota, la fila 2 son los
-  // headers, y desde la fila 3 son datos reales. Hace upsert por ISIN (o
-  // Ticker, en el caso de Acciones). Las columnas "%" e "Inversión (USD)"
-  // están en la plantilla solo para que se parezca a la tabla del PPT —
-  // son datos de cada propuesta puntual, no de la biblioteca, así que se
-  // ignoran acá (no se guardan, `fondos` no tiene esas columnas).
+  // Lee el Excel base de instrumentos (3 pestañas: Fondos, Acciones, Bonos
+  // — Fondos distributivos NO es una pestaña aparte, ver
+  // descargarPlantillaBase) y arma la lista de revisión en pantalla — NO
+  // guarda nada todavía. La fila 1 es una nota, la fila 2 son los headers,
+  // y desde la fila 3 son datos reales. Las columnas "%" e "Inversión
+  // (USD)" están en la plantilla solo para que se parezca a la tabla del
+  // PPT — son datos de cada propuesta puntual, no de la biblioteca, así
+  // que se ignoran acá.
   async function handleImportBibliotecaBase(file) {
     if (!file) return;
-    setBaseImportCargando(true);
     setBaseImportResumen("");
     try {
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: "array", cellDates: true });
 
       const nombresPestana = ["Fondos", "Acciones", "Bonos"];
-      let totalCargados = 0;
-      const erroresPorPestana = [];
+      const filasPreview = [];
 
       for (const sheet of nombresPestana) {
         const ws = wb.Sheets[sheet];
-        if (!ws) continue; // pestaña no presente en este Excel puntual, se saltea sin marcar error
+        if (!ws) continue; // pestaña no presente en este Excel puntual, se saltea
 
         const filas = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
         const headers = (filas[1] || []).map((h) => (h == null ? "" : String(h).trim()));
@@ -739,7 +747,7 @@ export default function App() {
         // no importa cuál se usó, se detecta solo mirando los headers.
         const tieneColumnasDividendo = headers.includes("Dividendo (%)");
 
-        const registros = filasDatos.map((r) => {
+        filasDatos.forEach((r) => {
           const obj = {};
           headers.forEach((h, i) => { obj[h] = r[i]; });
 
@@ -747,8 +755,8 @@ export default function App() {
           const registro = {
             isin: codigo ? String(codigo).trim() : "",
             nombre: obj["Nombre"] ? String(obj["Nombre"]).trim() : "",
-            sector: obj["Sector"] || null,
-            categoria: obj["Categoría"] || null,
+            sector: obj["Sector"] || "",
+            categoria: obj["Categoría"] || CATEGORIAS[0],
           };
 
           if (sheet === "Fondos") {
@@ -758,48 +766,59 @@ export default function App() {
             const dividendoPct = tieneColumnasDividendo ? excelValueToNumber(obj["Dividendo (%)"]) : null;
             const esDistributivo = dividendoPct !== null && dividendoPct > 0;
             registro.tipo_instrumento = esDistributivo ? "fondo_distributivo" : "fondo";
-            registro.ytd = excelValueToNumber(obj["Rend. YTD"]);
-            registro.y1 = excelValueToNumber(obj["Rend. 1 año"]);
-            registro.y3 = excelValueToNumber(obj["Rend. 3 años"]);
-            registro.y5 = excelValueToNumber(obj["Rend. 5 años"]);
-            registro.ter = excelValueToNumber(obj["TER"]);
-            if (esDistributivo) {
-              registro.dividendo_pct = dividendoPct;
-              registro.frecuencia_dividendo = obj["Frec. Dividendo"] || null;
-            }
+            registro.ytd = excelValueToNumber(obj["Rend. YTD"]) || 0;
+            registro.y1 = excelValueToNumber(obj["Rend. 1 año"]) || 0;
+            registro.y3 = excelValueToNumber(obj["Rend. 3 años"]) || 0;
+            registro.y5 = excelValueToNumber(obj["Rend. 5 años"]) || 0;
+            registro.ter = excelValueToNumber(obj["TER"]) || 0;
+            registro.dividendo_pct = esDistributivo ? dividendoPct : 0;
+            registro.frecuencia_dividendo = esDistributivo ? (obj["Frec. Dividendo"] || "") : "";
           } else if (sheet === "Acciones") {
             registro.tipo_instrumento = "accion";
-            registro.ytd = excelValueToNumber(obj["Rend. YTD"]);
-            registro.y1 = excelValueToNumber(obj["Rend. 1 año"]);
-            registro.y3 = excelValueToNumber(obj["Rend. 3 años"]);
-            registro.y5 = excelValueToNumber(obj["Rend. 5 años"]);
+            registro.ytd = excelValueToNumber(obj["Rend. YTD"]) || 0;
+            registro.y1 = excelValueToNumber(obj["Rend. 1 año"]) || 0;
+            registro.y3 = excelValueToNumber(obj["Rend. 3 años"]) || 0;
+            registro.y5 = excelValueToNumber(obj["Rend. 5 años"]) || 0;
           } else if (sheet === "Bonos") {
             registro.tipo_instrumento = "bono";
-            registro.cupon_pct = excelValueToNumber(obj["Cupón (%)"]);
-            registro.rating = obj["Rating S&P"] || null;
-            registro.price = excelValueToNumber(obj["Price**"] ?? obj["Price"]);
-            registro.yield_pct = excelValueToNumber(obj["Yield"]);
-            registro.maturity = excelValueToDateStr(obj["Maturity"]);
+            registro.cupon_pct = excelValueToNumber(obj["Cupón (%)"]) || 0;
+            registro.rating = obj["Rating S&P"] || "";
+            registro.price = excelValueToNumber(obj["Price**"] ?? obj["Price"]) || 0;
+            registro.yield_pct = excelValueToNumber(obj["Yield"]) || 0;
+            registro.maturity = excelValueToDateStr(obj["Maturity"]) || "";
           }
-          return registro;
-        }).filter((r) => r.isin && r.nombre);
-
-        if (registros.length === 0) continue;
-
-        const { error } = await supabase.from("fondos").upsert(registros, { onConflict: "isin" });
-        if (error) {
-          erroresPorPestana.push(`${sheet}: ${error.message}`);
-        } else {
-          totalCargados += registros.length;
-        }
+          if (registro.isin && registro.nombre) filasPreview.push(registro);
+        });
       }
 
-      setBaseImportResumen(
-        `✓ ${totalCargados} instrumento(s) cargado(s) a la biblioteca.` +
-        (erroresPorPestana.length ? ` Errores: ${erroresPorPestana.join(" | ")}` : "")
-      );
+      setBaseImportPreview(filasPreview);
+      if (filasPreview.length === 0) setBaseImportResumen("No se encontró ninguna fila para importar — revisá que el archivo tenga las pestañas Fondos/Acciones/Bonos con datos desde la fila 3.");
     } catch (e) {
-      setBaseImportResumen("Error al importar: " + (e.message || e));
+      setBaseImportResumen("Error al leer el archivo: " + (e.message || e));
+    }
+  }
+
+  function actualizarBaseImportPreview(idx, campo, valor) {
+    setBaseImportPreview((prev) => prev.map((r, i) => i === idx ? { ...r, [campo]: valor } : r));
+  }
+
+  function quitarBaseImportPreview(idx) {
+    setBaseImportPreview((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  // Recién acá se guarda de verdad en Supabase — todo lo de arriba fue
+  // solo lectura y edición en memoria.
+  async function aplicarBaseImportPreview() {
+    if (baseImportPreview.length === 0) return;
+    setBaseImportCargando(true);
+    setBaseImportResumen("");
+    try {
+      const { error } = await supabase.from("fondos").upsert(baseImportPreview, { onConflict: "isin" });
+      if (error) throw error;
+      setBaseImportResumen(`✓ ${baseImportPreview.length} instrumento(s) cargado(s) a la biblioteca.`);
+      setBaseImportPreview([]);
+    } catch (e) {
+      setBaseImportResumen("Error al guardar: " + (e.message || e));
     } finally {
       setBaseImportCargando(false);
     }
@@ -1327,6 +1346,71 @@ export default function App() {
 
   const totalRevisionPreview = currentAssets.reduce((s, a) => s + (Number(a.valor_actual) || 0), 0) + Number(cashValorRevision || 0);
 
+  // Tabla de revisión de la importación del Excel base — se usa en los dos
+  // lugares donde está el cargador (Biblioteca de fondos y Portafolio
+  // propuesto), agrupada por tipo igual que la tabla de Portafolio
+  // propuesto, para que sea consistente visualmente.
+  function renderBaseImportPreview() {
+    if (baseImportPreview.length === 0) return null;
+    return (
+      <div style={{ marginTop: 12 }}>
+        {TIPO_ORDEN.filter((tipo) => baseImportPreview.some((r) => r.tipo_instrumento === tipo)).map((tipo) => {
+          const filas = baseImportPreview.map((r, i) => ({ r, i })).filter(({ r }) => r.tipo_instrumento === tipo);
+          const cols = LIBRERIA_COLUMNAS_POR_TIPO[tipo];
+          return (
+            <div key={tipo} style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: NAVY, marginBottom: 6 }}>{TIPO_LABELS[tipo]} ({filas.length})</div>
+              <div style={{ overflowX: "auto", background: "#fff", border: "1px solid #eae7dc", borderRadius: 8 }}>
+                <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11.5 }}>
+                  <thead>
+                    <tr style={{ background: CREAM }}>
+                      <th style={{ padding: "5px 7px", textAlign: "left", whiteSpace: "nowrap" }}>Categoría</th>
+                      {cols.map((c) => <th key={c.key} style={{ padding: "5px 7px", textAlign: "left", whiteSpace: "nowrap" }}>{c.label}</th>)}
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filas.map(({ r, i }) => (
+                      <tr key={i} style={{ borderTop: "1px solid #f2f0e9" }}>
+                        <td style={{ padding: "3px 7px" }}>
+                          <select style={{ ...miniInputStyle, padding: "3px 5px", fontSize: 11 }} value={r.categoria} onChange={(e) => actualizarBaseImportPreview(i, "categoria", e.target.value)}>
+                            {CATEGORIAS.map((c) => <option key={c} value={c}>{c}</option>)}
+                          </select>
+                        </td>
+                        {cols.map((c) => (
+                          <td key={c.key} style={{ padding: "3px 7px" }}>
+                            {c.fijo ? (
+                              <span>{r[c.key]}</span>
+                            ) : c.tipo === "date" ? (
+                              <input type="date" style={{ ...miniInputStyle, padding: "3px 5px", fontSize: 11 }} value={r[c.key] || ""} onChange={(e) => actualizarBaseImportPreview(i, c.key, e.target.value)} />
+                            ) : (
+                              <input
+                                type={c.tipo === "number" ? "number" : "text"}
+                                style={{ ...miniInputStyle, padding: "3px 5px", width: c.tipo === "number" ? 60 : 90, fontSize: 11 }}
+                                value={r[c.key] ?? ""}
+                                onChange={(e) => actualizarBaseImportPreview(i, c.key, c.tipo === "number" ? +e.target.value : e.target.value)}
+                              />
+                            )}
+                          </td>
+                        ))}
+                        <td style={{ padding: "3px 7px" }}>
+                          <button onClick={() => quitarBaseImportPreview(i)} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 11, cursor: "pointer" }}>Quitar</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })}
+        <button onClick={aplicarBaseImportPreview} disabled={baseImportCargando} style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12.5, cursor: "pointer" }}>
+          {baseImportCargando ? "Guardando…" : `Aplicar (${baseImportPreview.length} instrumento${baseImportPreview.length === 1 ? "" : "s"})`}
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div style={{ fontFamily: "Montserrat, sans-serif", background: CREAM, minHeight: "100vh" }}>
       <div style={{ background: NAVY, color: "#fff", padding: "14px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1605,6 +1689,7 @@ export default function App() {
                 {baseImportCargando && <span style={{ fontSize: 11.5, color: "#78776f" }}>Cargando…</span>}
               </div>
               {baseImportResumen && <div style={{ marginTop: 8, fontSize: 11.5, color: baseImportResumen.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{baseImportResumen}</div>}
+              {renderBaseImportPreview()}
             </div>
 
             <p style={{ fontSize: 12.5, color: "#78776f", marginBottom: 14 }}>Buscá un fondo para cargarle logo, descripción y factsheet — queda guardado para todas las próximas propuestas, no hay que repetirlo.</p>
@@ -1965,6 +2050,7 @@ export default function App() {
                   {baseImportCargando && <span style={{ fontSize: 11.5, color: "#78776f" }}>Cargando…</span>}
                 </div>
                 {baseImportResumen && <div style={{ marginTop: 8, fontSize: 11.5, color: baseImportResumen.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{baseImportResumen}</div>}
+                {renderBaseImportPreview()}
               </div>
 
               <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 12, marginBottom: 18 }}>
