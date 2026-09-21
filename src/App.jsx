@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "./supabaseClient";
 import * as XLSX from "xlsx";
 
@@ -153,6 +153,39 @@ const secondaryButtonStyle = {
   color: "#3A3A38", fontWeight: 600, fontSize: 13, cursor: "pointer",
 };
 
+// Botón de archivo con estilo propio — <input type="file"> nativo no se
+// puede restylear directo (cada navegador dibuja su propio botón), así que
+// se esconde y se dispara con un botón normal al lado del nombre elegido.
+function FileInputButton({ accept, multiple, onChange, label }) {
+  const inputRef = useRef(null);
+  const [fileName, setFileName] = useState("");
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={accept}
+        multiple={multiple}
+        onChange={(e) => {
+          const files = e.target.files;
+          setFileName(!files || files.length === 0 ? "" : files.length === 1 ? files[0].name : `${files.length} archivos`);
+          onChange(e);
+        }}
+        style={{ display: "none" }}
+      />
+      <button
+        type="button"
+        onClick={() => inputRef.current && inputRef.current.click()}
+        style={{ ...secondaryButtonStyle, display: "flex", alignItems: "center", gap: 8, padding: "9px 16px", fontSize: 12.5, whiteSpace: "nowrap" }}
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        {label || "Elegir archivo"}
+      </button>
+      <span style={{ fontSize: 12.5, color: fileName ? NAVY : "#9A998F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{fileName || "Ningún archivo seleccionado"}</span>
+    </div>
+  );
+}
+
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -245,7 +278,7 @@ export default function App() {
   const [bibliotecaMensaje, setBibliotecaMensaje] = useState("");
 
   // --- Importación masiva de biblioteca (desde el paquete extraído de un PDF/PPTX) ---
-  const [importModo, setImportModo] = useState(false);
+  const [importModo, setImportModo] = useState(false); // ya no se usa en la UI (se sacó "Importar masivo"), queda el state por si el JSON+zip vuelve a hacer falta
   const [importEntradas, setImportEntradas] = useState([]);
   const [importLogos, setImportLogos] = useState({});
   const [importPreparando, setImportPreparando] = useState(false);
@@ -257,7 +290,7 @@ export default function App() {
   // de Calamos/Morgan Stanley — un fondo con el logo de otro pegado por
   // error en la importación masiva (se agrupaban varios ISIN bajo un mismo
   // logo a mano, y ahí es fácil equivocarse de fila).
-  const [logosVista, setLogosVista] = useState(false);
+  const [logosVista, setLogosVista] = useState(false); // ya no se usa (se unificó con la biblioteca), queda por compatibilidad
   const [logosCargando, setLogosCargando] = useState(false);
   const [logosGrupos, setLogosGrupos] = useState([]);
   const [logosQuery, setLogosQuery] = useState("");
@@ -465,8 +498,8 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (vista === "biblioteca" && logosVista) { cargarAuditoriaLogos(); cargarTodasLasMarcas(); }
-  }, [vista, logosVista]);
+    if (vista === "biblioteca") { cargarAuditoriaLogos(); cargarTodasLasMarcas(); }
+  }, [vista]);
 
   // --- Lista unificada: cada marca registrada + los grupos de logo que
   // todavía no tienen nombre asignado (para poder bautizarlos ahí mismo) —
@@ -1638,75 +1671,69 @@ export default function App() {
       <div style={{ flex: 1, minWidth: 0 }}>
 
       {vista === "biblioteca" ? (
-        importModo ? (
-          <div style={{ padding: "28px 36px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <h3 style={{ color: NAVY, fontSize: 16, margin: 0 }}>Importar biblioteca masiva</h3>
-              <button onClick={() => setImportModo(false)} style={{ border: "none", background: "none", color: "#78776f", fontSize: 12.5, cursor: "pointer" }}>← Volver a la biblioteca</button>
+        <div style={{ padding: "28px 36px" }}>
+          <h3 style={{ color: NAVY, fontSize: 16, marginBottom: 8 }}>Biblioteca de fondos</h3>
+          <p style={{ fontSize: 12.5, color: "#78776f", marginBottom: 20 }}>Buscá un fondo para cargarle logo, descripción y factsheet — queda guardado para todas las próximas propuestas, no hay que repetirlo.</p>
+
+          <div style={{ display: "flex", gap: 24, marginBottom: 34 }}>
+            <div style={{ width: 360 }}>
+              <input style={inputStyle} value={bibliotecaQuery} onChange={(e) => setBibliotecaQuery(e.target.value)} placeholder="Buscar por ISIN o nombre" />
+              <div style={{ marginTop: 10, maxHeight: 480, overflowY: "auto" }}>
+                {bibliotecaResultados.map((f) => (
+                  <div key={f.isin} onClick={() => seleccionarFondoBiblioteca(f)} style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #eae7dc", background: bibliotecaSel?.isin === f.isin ? "#fff" : "transparent" }}>
+                    <b>{f.isin}</b> — {f.nombre} {f.logo_url && <span style={{ color: TEAL }}>✓ logo</span>}
+                  </div>
+                ))}
+              </div>
             </div>
-            <p style={{ fontSize: 12.5, color: "#78776f", marginBottom: 16 }}>Subí el JSON extraído y las imágenes de los logos. Matcheamos automático por ISIN o por nombre — revisá los casos dudosos antes de aplicar.</p>
 
-            <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
-              <Field label="Archivo JSON de extracción">
-                <input type="file" accept=".json" onChange={(e) => handleImportJson(e.target.files[0])} style={{ ...inputStyle, padding: "8px" }} />
-              </Field>
-              <Field label="Imágenes de logo (seleccioná todas juntas)">
-                <input type="file" accept="image/*" multiple onChange={(e) => handleImportLogoFiles(e.target.files)} style={{ ...inputStyle, padding: "8px" }} />
-              </Field>
-            </div>
+            {bibliotecaSel && (
+              <div style={{ flex: 1, maxWidth: 480, background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 20 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{bibliotecaSel.nombre}</div>
+                <div style={{ fontSize: 12, color: "#78776f", marginBottom: 16 }}>{bibliotecaSel.isin}</div>
 
-            {importPreparando && <div style={{ fontSize: 13, color: "#78776f" }}>Buscando coincidencias contra la biblioteca…</div>}
+                {bibliotecaSel.logo_url && (
+                  <img src={bibliotecaSel.logo_url} alt="logo" style={{ maxHeight: 60, marginBottom: 12, display: "block" }} />
+                )}
 
-            {importEntradas.length > 0 && !importPreparando && (
-              <>
-                <div style={{ fontSize: 12.5, marginBottom: 12, color: "#78776f" }}>
-                  {importEntradas.length} fondos leídos — {importEntradas.filter(e => e.candidatos.length === 1).length} con match automático, {importEntradas.filter(e => e.candidatos.length !== 1 && !e.omitir).length} para revisar.
-                </div>
-                <div style={{ maxHeight: 480, overflowY: "auto", background: "#fff", border: "1px solid #eae7dc", borderRadius: 8 }}>
-                  {importEntradas.map((entry, i) => (
-                    <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 10, padding: "10px 14px", borderBottom: "1px solid #eae7dc", alignItems: "center", opacity: entry.omitir ? 0.45 : 1 }}>
-                      <div>
-                        <div style={{ fontSize: 13 }}>{entry.nombre}</div>
-                        <div style={{ fontSize: 11, color: "#a5a399" }}>{entry.categoria_pptx} {entry.isin_detectado ? `· ISIN: ${entry.isin_detectado}` : ""}{entry.logo_file ? " · con logo" : " · sin logo"}</div>
+                <Field label="Buscar logo por marca (ej: MFS, BlackRock, Vontobel)" hint="Reutiliza un logo ya cargado — no sube ningún archivo nuevo.">
+                  <input style={inputStyle} value={marcaFondoQuery} onChange={(e) => { setMarcaFondoQuery(e.target.value); setMarcaFondoAsignada(""); }} placeholder="Escribí el nombre de la marca" />
+                </Field>
+                {marcaFondoResultados.length > 0 && (
+                  <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginTop: -8, marginBottom: 14, maxHeight: 160, overflowY: "auto" }}>
+                    {marcaFondoResultados.map((m) => (
+                      <div key={m.id} onClick={() => asignarMarcaAFondo(m)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #f2f0e9" }}>
+                        <img src={m.logo_url} alt="" style={{ height: 20, maxWidth: 70, objectFit: "contain" }} />
+                        {m.nombre}
                       </div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 90, overflowY: "auto" }}>
-                        {entry.candidatos.length === 0 && <div style={{ fontSize: 11.5, color: "#a5a399" }}>Sin coincidencias en la biblioteca</div>}
-                        {entry.candidatos.map((c) => (
-                          <label key={c.isin} style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 5 }}>
-                            <input
-                              type="checkbox"
-                              checked={entry.isins_elegidos?.includes(c.isin) || false}
-                              onChange={(e) => {
-                                const actuales = entry.isins_elegidos || [];
-                                const nuevos = e.target.checked ? [...actuales, c.isin] : actuales.filter((x) => x !== c.isin);
-                                actualizarImportEntrada(i, "isins_elegidos", nuevos);
-                              }}
-                            />
-                            {c.isin} — {c.nombre}
-                          </label>
-                        ))}
-                      </div>
-                      <label style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 4 }}>
-                        <input type="checkbox" checked={entry.omitir} onChange={(e) => actualizarImportEntrada(i, "omitir", e.target.checked)} /> Omitir
-                      </label>
-                    </div>
-                  ))}
-                </div>
-                <button onClick={aplicarImportacion} disabled={importAplicando} style={{ marginTop: 16, padding: "10px 20px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontWeight: 600, cursor: "pointer" }}>
-                  {importAplicando ? "Aplicando…" : "Aplicar importación"}
+                    ))}
+                  </div>
+                )}
+                {marcaFondoAsignada && (
+                  <div style={{ fontSize: 12, color: TEAL, marginBottom: 14 }}>✓ Logo de "{marcaFondoAsignada}" asignado — no olvides apretar Guardar.</div>
+                )}
+
+                <Field label="O subir un logo nuevo para este fondo puntual (imagen)">
+                  <FileInputButton accept="image/*" onChange={(e) => setBibliotecaLogoFile(e.target.files[0])} label="Elegir imagen" />
+                </Field>
+                <Field label="Descripción">
+                  <textarea value={bibliotecaSel.descripcion || ""} onChange={(e) => setBibliotecaSel((prev) => ({ ...prev, descripcion: e.target.value }))} rows={4} style={{ ...inputStyle, resize: "vertical" }} />
+                </Field>
+                <Field label="Link al factsheet">
+                  <input style={inputStyle} value={bibliotecaSel.factsheet_url || ""} onChange={(e) => setBibliotecaSel((prev) => ({ ...prev, factsheet_url: e.target.value }))} placeholder="https://..." />
+                </Field>
+                <button onClick={guardarFondoBiblioteca} disabled={bibliotecaGuardando} style={{ padding: "9px 18px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontWeight: 600, cursor: "pointer" }}>
+                  {bibliotecaGuardando ? "Guardando…" : "Guardar"}
                 </button>
-                {importResumen && <div style={{ marginTop: 10, fontSize: 13, color: "#3a7d44" }}>✓ {importResumen}</div>}
-              </>
+                {bibliotecaMensaje && <div style={{ marginTop: 10, fontSize: 12.5, color: bibliotecaMensaje.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{bibliotecaMensaje}</div>}
+              </div>
             )}
           </div>
-        ) : logosVista ? (
-          <div style={{ padding: "28px 36px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <h3 style={{ color: NAVY, fontSize: 16, margin: 0 }}>Auditoría de logos</h3>
-              <button onClick={() => setLogosVista(false)} style={{ border: "none", background: "none", color: "#78776f", fontSize: 12.5, cursor: "pointer" }}>← Volver a la biblioteca</button>
-            </div>
+
+          <div style={{ borderTop: "1px solid #eae7dc", paddingTop: 26 }}>
+            <h3 style={{ color: NAVY, fontSize: 16, marginBottom: 8 }}>Marcas y logos</h3>
             <p style={{ fontSize: 12.5, color: "#78776f", marginBottom: 16 }}>
-              Agrupa todos los fondos por su logo real. Un grupo con un solo fondo es lo normal. Un grupo con varios fondos que no son de la misma familia (como pasó con Calamos y Morgan Stanley) suele ser un error de carga — el logo de uno quedó pegado en el otro.
+              Cada marca acá se puede asociar a varios fondos sin duplicar el archivo. Agrupa además todos los fondos por su logo real — un grupo con varios fondos que no son de la misma familia suele ser un error de carga.
             </p>
 
             <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 14, marginBottom: 22, maxWidth: 520 }}>
@@ -1717,7 +1744,7 @@ export default function App() {
                   <input style={miniInputStyle} value={marcaNombreNuevo} onChange={(e) => setMarcaNombreNuevo(e.target.value)} placeholder="Ej: MFS" />
                 </MiniField>
                 <MiniField label="Imagen del logo">
-                  <input type="file" accept="image/*" onChange={(e) => setMarcaArchivoNuevo(e.target.files[0])} style={{ ...miniInputStyle, padding: "6px" }} />
+                  <FileInputButton accept="image/*" onChange={(e) => setMarcaArchivoNuevo(e.target.files[0])} label="Elegir imagen" />
                 </MiniField>
                 <button onClick={crearMarcaNueva} disabled={marcaGuardandoNueva} style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12.5, cursor: "pointer" }}>
                   {marcaGuardandoNueva ? "Guardando…" : "Guardar"}
@@ -1729,7 +1756,7 @@ export default function App() {
             <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 14, marginBottom: 22, maxWidth: 640 }}>
               <div style={{ fontSize: 12.5, fontWeight: 600, color: NAVY, marginBottom: 8 }}>Importar varias marcas a la vez</div>
               <div style={{ fontSize: 11.5, color: "#78776f", marginBottom: 10 }}>Descomprimí el ZIP en una carpeta y seleccioná todas las imágenes juntas — el nombre de cada marca sale del nombre del archivo (editable antes de aplicar).</div>
-              <input type="file" accept="image/*" multiple onChange={(e) => handleMarcaImportFiles(e.target.files)} style={{ ...inputStyle, padding: "8px", marginBottom: 12 }} />
+              <div style={{ marginBottom: 12 }}><FileInputButton accept="image/*" multiple onChange={(e) => handleMarcaImportFiles(e.target.files)} label="Elegir archivos" /></div>
 
               {marcaImportEntradas.length > 0 && (
                 <>
@@ -1778,7 +1805,7 @@ export default function App() {
                             <div style={{ marginTop: 12, marginBottom: 14 }}>
                               <div style={{ fontSize: 11.5, fontWeight: 600, color: NAVY, marginBottom: 6 }}>Cambiar el logo de esta marca</div>
                               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                <input type="file" accept="image/*" onChange={(e) => setMarcaLogoNuevoArchivo(e.target.files[0])} style={{ ...miniInputStyle, padding: "6px", flex: 1 }} />
+                                <FileInputButton accept="image/*" onChange={(e) => setMarcaLogoNuevoArchivo(e.target.files[0])} label="Elegir imagen" />
                                 <button onClick={() => actualizarLogoMarca(fila.marca)} disabled={marcaLogoActualizando || !marcaLogoNuevoArchivo} style={{ padding: "7px 14px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}>
                                   {marcaLogoActualizando ? "…" : "Actualizar"}
                                 </button>
@@ -1879,87 +1906,7 @@ export default function App() {
               </div>
             )}
           </div>
-        ) : (
-        <div style={{ padding: "28px 36px", display: "flex", gap: 24 }}>
-          <div style={{ width: 360 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <h3 style={{ color: NAVY, fontSize: 16, marginBottom: 8 }}>Biblioteca de fondos</h3>
-              <div style={{ display: "flex", gap: 12 }}>
-                <button onClick={() => setLogosVista(true)} style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>Ver todos los logos</button>
-                <button onClick={() => setImportModo(true)} style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>Importar masivo</button>
-              </div>
-            </div>
-
-            <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 12, margin: "12px 0" }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: NAVY, marginBottom: 4 }}>Importar biblioteca base (Fondos / Fondos distributivos / Acciones / Bonos)</div>
-              <div style={{ fontSize: 11, color: "#78776f", marginBottom: 8 }}>El Excel con las pestañas que mantiene el equipo — carga directo por ISIN/Ticker, sin pedir revisión.</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                <input type="checkbox" id="divid-biblioteca" checked={descargaConDividendos} onChange={(e) => setDescargaConDividendos(e.target.checked)} />
-                <label htmlFor="divid-biblioteca" style={{ fontSize: 11, color: "#78776f" }}>Incluir columnas de dividendos en la pestaña Fondos</label>
-                <button onClick={() => descargarPlantillaBase(descargaConDividendos)} style={{ border: "none", background: "none", color: TEAL, fontSize: 11, cursor: "pointer", textDecoration: "underline", padding: 0, marginLeft: 4 }}>Descargar plantilla en blanco</button>
-              </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <input type="file" accept=".xlsx,.xls" onChange={(e) => handleImportBibliotecaBase(e.target.files[0])} style={{ ...miniInputStyle, padding: "6px", flex: 1 }} />
-                {baseImportCargando && <span style={{ fontSize: 11.5, color: "#78776f" }}>Cargando…</span>}
-              </div>
-              {baseImportResumen && <div style={{ marginTop: 8, fontSize: 11.5, color: baseImportResumen.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{baseImportResumen}</div>}
-              {renderBaseImportPreview()}
-            </div>
-
-            <p style={{ fontSize: 12.5, color: "#78776f", marginBottom: 14 }}>Buscá un fondo para cargarle logo, descripción y factsheet — queda guardado para todas las próximas propuestas, no hay que repetirlo.</p>
-            <input style={inputStyle} value={bibliotecaQuery} onChange={(e) => setBibliotecaQuery(e.target.value)} placeholder="Buscar por ISIN o nombre" />
-            <div style={{ marginTop: 10, maxHeight: 480, overflowY: "auto" }}>
-              {bibliotecaResultados.map((f) => (
-                <div key={f.isin} onClick={() => seleccionarFondoBiblioteca(f)} style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #eae7dc", background: bibliotecaSel?.isin === f.isin ? "#fff" : "transparent" }}>
-                  <b>{f.isin}</b> — {f.nombre} {f.logo_url && <span style={{ color: TEAL }}>✓ logo</span>}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {bibliotecaSel && (
-            <div style={{ flex: 1, maxWidth: 480, background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 20 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{bibliotecaSel.nombre}</div>
-              <div style={{ fontSize: 12, color: "#78776f", marginBottom: 16 }}>{bibliotecaSel.isin}</div>
-
-              {bibliotecaSel.logo_url && (
-                <img src={bibliotecaSel.logo_url} alt="logo" style={{ maxHeight: 60, marginBottom: 12, display: "block" }} />
-              )}
-
-              <Field label="Buscar logo por marca (ej: MFS, BlackRock, Vontobel)" hint="Reutiliza un logo ya cargado — no sube ningún archivo nuevo.">
-                <input style={inputStyle} value={marcaFondoQuery} onChange={(e) => { setMarcaFondoQuery(e.target.value); setMarcaFondoAsignada(""); }} placeholder="Escribí el nombre de la marca" />
-              </Field>
-              {marcaFondoResultados.length > 0 && (
-                <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginTop: -8, marginBottom: 14, maxHeight: 160, overflowY: "auto" }}>
-                  {marcaFondoResultados.map((m) => (
-                    <div key={m.id} onClick={() => asignarMarcaAFondo(m)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #f2f0e9" }}>
-                      <img src={m.logo_url} alt="" style={{ height: 20, maxWidth: 70, objectFit: "contain" }} />
-                      {m.nombre}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {marcaFondoAsignada && (
-                <div style={{ fontSize: 12, color: TEAL, marginBottom: 14 }}>✓ Logo de "{marcaFondoAsignada}" asignado — no olvides apretar Guardar.</div>
-              )}
-
-              <Field label="O subir un logo nuevo para este fondo puntual (imagen)">
-                <input type="file" accept="image/*" onChange={(e) => setBibliotecaLogoFile(e.target.files[0])} style={{ ...inputStyle, padding: "8px" }} />
-              </Field>
-              <Field label="Descripción">
-                <textarea value={bibliotecaSel.descripcion || ""} onChange={(e) => setBibliotecaSel((prev) => ({ ...prev, descripcion: e.target.value }))} rows={4} style={{ ...inputStyle, resize: "vertical" }} />
-              </Field>
-              <Field label="Link al factsheet">
-                <input style={inputStyle} value={bibliotecaSel.factsheet_url || ""} onChange={(e) => setBibliotecaSel((prev) => ({ ...prev, factsheet_url: e.target.value }))} placeholder="https://..." />
-              </Field>
-              <button onClick={guardarFondoBiblioteca} disabled={bibliotecaGuardando} style={{ padding: "9px 18px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontWeight: 600, cursor: "pointer" }}>
-                {bibliotecaGuardando ? "Guardando…" : "Guardar"}
-              </button>
-              {bibliotecaMensaje && <div style={{ marginTop: 10, fontSize: 12.5, color: bibliotecaMensaje.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{bibliotecaMensaje}</div>}
-            </div>
-          )}
         </div>
-        )
       ) : vista === "registro" ? (
         <div style={{ padding: "28px 36px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
@@ -2128,7 +2075,7 @@ export default function App() {
                         <div style={{ marginTop: 8 }}>
                           <MiniField label="Foto (opcional — si no se sube, se usa la del template si el nombre coincide, o iniciales)">
                             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                              <input type="file" accept="image/*" onChange={(e) => handleTeamFoto(m.id, e.target.files[0])} style={{ ...miniInputStyle, padding: "6px", flex: 1 }} />
+                              <FileInputButton accept="image/*" onChange={(e) => handleTeamFoto(m.id, e.target.files[0])} label="Elegir foto" />
                               {m.foto_base64 && <span style={{ fontSize: 11, color: TEAL }}>✓ foto cargada</span>}
                             </div>
                           </MiniField>
@@ -2194,7 +2141,7 @@ export default function App() {
               </Field>
 
               <Field label="Importar desde Excel (Open Tax Lots de StoneX)" hint="Toma Symbol/ID, Description, Adjusted Cost y Mkt Value de la hoja 'By Security' y agrega una fila por activo.">
-                <input type="file" accept=".xlsx,.xls" onChange={(e) => handleExcelImport(e.target.files[0])} style={{ ...inputStyle, padding: "8px" }} />
+                <FileInputButton accept=".xlsx,.xls" onChange={(e) => handleExcelImport(e.target.files[0])} label="Elegir Excel" />
               </Field>
 
               <button onClick={() => setCurrentAssets((prev) => [...prev, { isin: "", nombre: "", categoria: "Renta Variable", costo: 0, valor_actual: 0, precio_unidad: "", cantidad: "" }])} style={{ marginBottom: 14, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar activo a mano</button>
@@ -2272,7 +2219,7 @@ export default function App() {
                 <input type="number" style={{ ...inputStyle, maxWidth: 220 }} value={cashActualPropuesta} onChange={(e) => setCashActualPropuesta(+e.target.value)} />
               </Field>
               <Field label="Importar desde Excel (Open Tax Lots de StoneX)" hint="Toma Description, Mkt Value y Adjusted Cost de la hoja 'By Security' y agrega una fila por activo.">
-                <input type="file" accept=".xlsx,.xls" onChange={(e) => handleExcelImportPropuestaActual(e.target.files[0])} style={{ ...inputStyle, padding: "8px" }} />
+                <FileInputButton accept=".xlsx,.xls" onChange={(e) => handleExcelImportPropuestaActual(e.target.files[0])} label="Elegir Excel" />
               </Field>
               <button onClick={() => setCurrentAssets((prev) => [...prev, { nombre: "", importe: 0, costo: 0 }])} style={{ marginBottom: 12, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar activo a mano</button>
               {(() => {
@@ -2338,7 +2285,7 @@ export default function App() {
                   <button onClick={() => descargarPlantillaBase(descargaConDividendos)} style={{ border: "none", background: "none", color: TEAL, fontSize: 11.5, cursor: "pointer", textDecoration: "underline", padding: 0, marginLeft: 4 }}>Descargar plantilla en blanco</button>
                 </div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <input type="file" accept=".xlsx,.xls" onChange={(e) => handleImportExcelPropuesta(e.target.files[0])} style={{ ...miniInputStyle, padding: "6px", flex: 1 }} />
+                  <FileInputButton accept=".xlsx,.xls" onChange={(e) => handleImportExcelPropuesta(e.target.files[0])} label="Elegir Excel" />
                 </div>
                 {propuestaImportResumen && <div style={{ marginTop: 8, fontSize: 11.5, color: propuestaImportResumen.startsWith("Error") || propuestaImportResumen.startsWith("No se") ? "#b23b3b" : "#3a7d44" }}>{propuestaImportResumen}</div>}
               </div>
