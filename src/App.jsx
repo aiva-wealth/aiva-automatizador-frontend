@@ -298,6 +298,7 @@ export default function App() {
   const [baseImportResumen, setBaseImportResumen] = useState("");
   const [descargaConDividendos, setDescargaConDividendos] = useState(false);
   const [baseImportPreview, setBaseImportPreview] = useState([]); // [{tipo_instrumento, isin, nombre, sector, categoria, ...campos}] — revisable/editable antes de guardar
+  const [propuestaImportResumen, setPropuestaImportResumen] = useState(""); // resultado de importar el Excel directo a ESTA propuesta (no toca la biblioteca)
 
   async function cargarRegistro() {
     setRegistroCargando(true);
@@ -717,84 +718,115 @@ export default function App() {
     return Number.isNaN(n) ? null : n;
   }
 
-  // Lee el Excel base de instrumentos (3 pestañas: Fondos, Acciones, Bonos
-  // — Fondos distributivos NO es una pestaña aparte, ver
-  // descargarPlantillaBase) y arma la lista de revisión en pantalla — NO
-  // guarda nada todavía. La fila 1 es una nota, la fila 2 son los headers,
-  // y desde la fila 3 son datos reales. Las columnas "%" e "Inversión
-  // (USD)" están en la plantilla solo para que se parezca a la tabla del
-  // PPT — son datos de cada propuesta puntual, no de la biblioteca, así
-  // que se ignoran acá.
+  // Parsea el Excel base de instrumentos (3 pestañas: Fondos, Acciones,
+  // Bonos — Fondos distributivos NO es una pestaña aparte, ver
+  // descargarPlantillaBase) y devuelve la lista de instrumentos leídos, sin
+  // tocar nada de Supabase ni de la propuesta — lo usan tanto el importador
+  // de la Biblioteca (que sí guarda en `fondos`) como el de Portafolio
+  // propuesto (que arma esta propuesta puntual y no toca la biblioteca).
+  async function parseExcelBaseInstrumentos(file) {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: "array", cellDates: true });
+
+    const nombresPestana = ["Fondos", "Acciones", "Bonos"];
+    const filas = [];
+
+    for (const sheet of nombresPestana) {
+      const ws = wb.Sheets[sheet];
+      if (!ws) continue; // pestaña no presente en este Excel puntual, se saltea
+
+      const filasHoja = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+      const headers = (filasHoja[1] || []).map((h) => (h == null ? "" : String(h).trim()));
+      const filasDatos = filasHoja.slice(2).filter((r) => r.some((v) => v !== null && v !== ""));
+      // la pestaña Fondos puede o no traer las columnas de dividendo,
+      // según se haya tildado "Incluir dividendos" al descargarla — acá no
+      // importa cuál se usó, se detecta solo mirando los headers.
+      const tieneColumnasDividendo = headers.includes("Dividendo (%)");
+
+      filasDatos.forEach((r) => {
+        const obj = {};
+        headers.forEach((h, i) => { obj[h] = r[i]; });
+
+        const codigo = sheet === "Acciones" ? obj["Ticker"] : obj["Código"];
+        const registro = {
+          isin: codigo ? String(codigo).trim() : "",
+          nombre: obj["Nombre"] ? String(obj["Nombre"]).trim() : "",
+          sector: obj["Sector"] || "",
+          categoria: obj["Categoría"] || CATEGORIAS[0],
+        };
+
+        if (sheet === "Fondos") {
+          // distributivo o no se decide FILA POR FILA: si esta fila
+          // puntual trae un Dividendo (%) cargado, es distributivo — así
+          // una misma planilla puede tener de los dos tipos mezclados.
+          const dividendoPct = tieneColumnasDividendo ? excelValueToNumber(obj["Dividendo (%)"]) : null;
+          const esDistributivo = dividendoPct !== null && dividendoPct > 0;
+          registro.tipo_instrumento = esDistributivo ? "fondo_distributivo" : "fondo";
+          registro.ytd = excelValueToNumber(obj["Rend. YTD"]) || 0;
+          registro.y1 = excelValueToNumber(obj["Rend. 1 año"]) || 0;
+          registro.y3 = excelValueToNumber(obj["Rend. 3 años"]) || 0;
+          registro.y5 = excelValueToNumber(obj["Rend. 5 años"]) || 0;
+          registro.ter = excelValueToNumber(obj["TER"]) || 0;
+          registro.dividendo_pct = esDistributivo ? dividendoPct : 0;
+          registro.frecuencia_dividendo = esDistributivo ? (obj["Frec. Dividendo"] || "") : "";
+        } else if (sheet === "Acciones") {
+          registro.tipo_instrumento = "accion";
+          registro.ytd = excelValueToNumber(obj["Rend. YTD"]) || 0;
+          registro.y1 = excelValueToNumber(obj["Rend. 1 año"]) || 0;
+          registro.y3 = excelValueToNumber(obj["Rend. 3 años"]) || 0;
+          registro.y5 = excelValueToNumber(obj["Rend. 5 años"]) || 0;
+        } else if (sheet === "Bonos") {
+          registro.tipo_instrumento = "bono";
+          registro.cupon_pct = excelValueToNumber(obj["Cupón (%)"]) || 0;
+          registro.rating = obj["Rating S&P"] || "";
+          registro.price = excelValueToNumber(obj["Price**"] ?? obj["Price"]) || 0;
+          registro.yield_pct = excelValueToNumber(obj["Yield"]) || 0;
+          registro.maturity = excelValueToDateStr(obj["Maturity"]) || "";
+        }
+        if (registro.isin && registro.nombre) filas.push(registro);
+      });
+    }
+    return filas;
+  }
+
+  // --- Importador de la Biblioteca de fondos (screen aparte): guarda en
+  // Supabase, para que quede buscable en cualquier propuesta futura. Pide
+  // revisión antes de aplicar. ---
   async function handleImportBibliotecaBase(file) {
     if (!file) return;
     setBaseImportResumen("");
     try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array", cellDates: true });
-
-      const nombresPestana = ["Fondos", "Acciones", "Bonos"];
-      const filasPreview = [];
-
-      for (const sheet of nombresPestana) {
-        const ws = wb.Sheets[sheet];
-        if (!ws) continue; // pestaña no presente en este Excel puntual, se saltea
-
-        const filas = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
-        const headers = (filas[1] || []).map((h) => (h == null ? "" : String(h).trim()));
-        const filasDatos = filas.slice(2).filter((r) => r.some((v) => v !== null && v !== ""));
-        // la pestaña Fondos puede o no traer las columnas de dividendo,
-        // según se haya tildado "Incluir dividendos" al descargarla — acá
-        // no importa cuál se usó, se detecta solo mirando los headers.
-        const tieneColumnasDividendo = headers.includes("Dividendo (%)");
-
-        filasDatos.forEach((r) => {
-          const obj = {};
-          headers.forEach((h, i) => { obj[h] = r[i]; });
-
-          const codigo = sheet === "Acciones" ? obj["Ticker"] : obj["Código"];
-          const registro = {
-            isin: codigo ? String(codigo).trim() : "",
-            nombre: obj["Nombre"] ? String(obj["Nombre"]).trim() : "",
-            sector: obj["Sector"] || "",
-            categoria: obj["Categoría"] || CATEGORIAS[0],
-          };
-
-          if (sheet === "Fondos") {
-            // distributivo o no se decide FILA POR FILA: si esta fila
-            // puntual trae un Dividendo (%) cargado, es distributivo —
-            // así una misma planilla puede tener de los dos tipos mezclados.
-            const dividendoPct = tieneColumnasDividendo ? excelValueToNumber(obj["Dividendo (%)"]) : null;
-            const esDistributivo = dividendoPct !== null && dividendoPct > 0;
-            registro.tipo_instrumento = esDistributivo ? "fondo_distributivo" : "fondo";
-            registro.ytd = excelValueToNumber(obj["Rend. YTD"]) || 0;
-            registro.y1 = excelValueToNumber(obj["Rend. 1 año"]) || 0;
-            registro.y3 = excelValueToNumber(obj["Rend. 3 años"]) || 0;
-            registro.y5 = excelValueToNumber(obj["Rend. 5 años"]) || 0;
-            registro.ter = excelValueToNumber(obj["TER"]) || 0;
-            registro.dividendo_pct = esDistributivo ? dividendoPct : 0;
-            registro.frecuencia_dividendo = esDistributivo ? (obj["Frec. Dividendo"] || "") : "";
-          } else if (sheet === "Acciones") {
-            registro.tipo_instrumento = "accion";
-            registro.ytd = excelValueToNumber(obj["Rend. YTD"]) || 0;
-            registro.y1 = excelValueToNumber(obj["Rend. 1 año"]) || 0;
-            registro.y3 = excelValueToNumber(obj["Rend. 3 años"]) || 0;
-            registro.y5 = excelValueToNumber(obj["Rend. 5 años"]) || 0;
-          } else if (sheet === "Bonos") {
-            registro.tipo_instrumento = "bono";
-            registro.cupon_pct = excelValueToNumber(obj["Cupón (%)"]) || 0;
-            registro.rating = obj["Rating S&P"] || "";
-            registro.price = excelValueToNumber(obj["Price**"] ?? obj["Price"]) || 0;
-            registro.yield_pct = excelValueToNumber(obj["Yield"]) || 0;
-            registro.maturity = excelValueToDateStr(obj["Maturity"]) || "";
-          }
-          if (registro.isin && registro.nombre) filasPreview.push(registro);
-        });
-      }
-
+      const filasPreview = await parseExcelBaseInstrumentos(file);
       setBaseImportPreview(filasPreview);
       if (filasPreview.length === 0) setBaseImportResumen("No se encontró ninguna fila para importar — revisá que el archivo tenga las pestañas Fondos/Acciones/Bonos con datos desde la fila 3.");
     } catch (e) {
       setBaseImportResumen("Error al leer el archivo: " + (e.message || e));
+    }
+  }
+
+  // --- Importador de Portafolio propuesto: NO toca la biblioteca ni
+  // Supabase — agrega los instrumentos directo a ESTA propuesta, con % y
+  // monto en 0 para completar a mano, igual que si los hubieras buscado y
+  // agregado uno por uno. Aparecen ya mismo en las tablas editables de
+  // abajo, agrupados por tipo, con su categoría correspondiente. ---
+  async function handleImportExcelPropuesta(file) {
+    if (!file) return;
+    setPropuestaImportResumen("");
+    try {
+      const filas = await parseExcelBaseInstrumentos(file);
+      if (filas.length === 0) {
+        setPropuestaImportResumen("No se encontró ninguna fila para importar — revisá que el archivo tenga las pestañas Fondos/Acciones/Bonos con datos desde la fila 3.");
+        return;
+      }
+      const nuevos = filas.map((f) => ({
+        ...f,
+        pct: 0, monto: 0,
+        rating: f.rating || "", price: f.price || 0, yield_pct: f.yield_pct || 0, maturity: f.maturity || "",
+      }));
+      setProposedAssets((prev) => [...prev, ...nuevos]);
+      setPropuestaImportResumen(`✓ ${nuevos.length} instrumento(s) agregado(s) a esta propuesta — completá % o monto en la tabla de abajo.`);
+    } catch (e) {
+      setPropuestaImportResumen("Error al leer el archivo: " + (e.message || e));
     }
   }
 
@@ -1032,6 +1064,16 @@ export default function App() {
   // cualquier cosa) — lo guarda en Supabase (upsert por ISIN) para que a
   // partir de ahora quede buscable como cualquier otro fondo, y lo suma a
   // esta propuesta.
+  function moverTeam(idx, direccion) {
+    setTeam((prev) => {
+      const nuevo = [...prev];
+      const destino = idx + direccion;
+      if (destino < 0 || destino >= nuevo.length) return prev;
+      [nuevo[idx], nuevo[destino]] = [nuevo[destino], nuevo[idx]];
+      return nuevo;
+    });
+  }
+
   async function agregarActivoNuevo() {
     if (!nuevoActivoNombre.trim() || !nuevoActivoIsin.trim()) return;
     const nuevoFondo = { isin: nuevoActivoIsin.trim(), nombre: nuevoActivoNombre.trim(), uso_frecuente: false, tipo_instrumento: "accion" };
@@ -1248,6 +1290,9 @@ export default function App() {
       // equipo (no incluye a Belén); el de Revisión sí tiene 5. Se recorta
       // acá para no depender de que el usuario se acuerde de destildar a
       // alguien.
+      // el template hoy solo tiene 5 lugares armados a mano (queda
+      // pendiente pasar a la grilla 3x2 de 6 en el backend) — mientras
+      // tanto se recorta acá a 5 para no romper el documento actual.
       equipo: team.filter((m) => m.incluido).slice(0, 5).map((m) => ({ nombre: m.nombre, puesto: m.puesto, educacion: m.educacion })),
       perfil_riesgo: perfil,
       portafolio_actual: tipo === "Revision"
@@ -1850,13 +1895,32 @@ export default function App() {
           )}
 
           {stepName === "Equipo" && (
-            <Section title="Equipo" subtitle="El template tiene 5 lugares armados para el equipo.">
-              {team.map((m) => (
-                <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0" }}>
-                  <input type="checkbox" checked={m.incluido} onChange={() => setTeam((prev) => prev.map((x) => x.id === m.id ? { ...x, incluido: !x.incluido } : x))} />
-                  <div style={{ fontSize: 13.5 }}>{m.nombre} — <span style={{ color: "#78776f" }}>{m.puesto}</span></div>
+            <Section title="Equipo" subtitle="Hasta 6 personas, en 2 filas de 3 (1-2-3 arriba, 4-5-6 abajo) según el orden de la lista. Agregá, sacá, editá y reordená con las flechas.">
+              {team.map((m, idx) => (
+                <div key={m.id} style={{ background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 12, marginBottom: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                    <input type="checkbox" checked={m.incluido} onChange={() => setTeam((prev) => prev.map((x) => x.id === m.id ? { ...x, incluido: !x.incluido } : x))} />
+                    <span style={{ fontSize: 11, color: idx < 6 ? "#78776f" : "#b23b3b", flex: 1 }}>
+                      {idx < 6 ? `Posición ${idx + 1} de 6` : "No entra en el documento — solo los primeros 6 de la lista"}
+                    </span>
+                    <button onClick={() => moverTeam(idx, -1)} disabled={idx === 0} style={{ border: "none", background: "none", cursor: idx === 0 ? "default" : "pointer", color: idx === 0 ? "#ccc" : "#78776f", fontSize: 13, padding: "0 4px" }}>▲</button>
+                    <button onClick={() => moverTeam(idx, 1)} disabled={idx === team.length - 1} style={{ border: "none", background: "none", cursor: idx === team.length - 1 ? "default" : "pointer", color: idx === team.length - 1 ? "#ccc" : "#78776f", fontSize: 13, padding: "0 4px" }}>▼</button>
+                    <button onClick={() => setTeam((prev) => prev.filter((x) => x.id !== m.id))} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer" }}>Quitar</button>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                    <MiniField label="Nombre">
+                      <input style={miniInputStyle} value={m.nombre} onChange={(e) => setTeam((prev) => prev.map((x) => x.id === m.id ? { ...x, nombre: e.target.value } : x))} />
+                    </MiniField>
+                    <MiniField label="Puesto">
+                      <input style={miniInputStyle} value={m.puesto} onChange={(e) => setTeam((prev) => prev.map((x) => x.id === m.id ? { ...x, puesto: e.target.value } : x))} />
+                    </MiniField>
+                  </div>
+                  <MiniField label="Educación">
+                    <input style={miniInputStyle} value={m.educacion} onChange={(e) => setTeam((prev) => prev.map((x) => x.id === m.id ? { ...x, educacion: e.target.value } : x))} />
+                  </MiniField>
                 </div>
               ))}
+              <button onClick={() => setTeam((prev) => [...prev, { id: Date.now(), nombre: "", puesto: "", educacion: "", incluido: true }])} style={{ marginTop: 4, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar integrante</button>
             </Section>
           )}
 
@@ -2038,19 +2102,19 @@ export default function App() {
               )}
 
               <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 12, marginBottom: 18 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: NAVY, marginBottom: 4 }}>¿Falta un instrumento en la biblioteca?</div>
-                <div style={{ fontSize: 11.5, color: "#78776f", marginBottom: 8 }}>Subí el Excel base (Fondos / Acciones / Bonos) para cargarlo de una.</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: NAVY, marginBottom: 4 }}>Cargar instrumentos desde Excel para esta propuesta</div>
+                <div style={{ fontSize: 11.5, color: "#78776f", marginBottom: 8 }}>
+                  Subí el Excel base (Fondos / Acciones / Bonos) — se agregan directo a la tabla de abajo, con % y monto en 0 para completar a mano. No toca la Biblioteca de fondos.
+                </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
                   <input type="checkbox" id="divid-portafolio" checked={descargaConDividendos} onChange={(e) => setDescargaConDividendos(e.target.checked)} />
                   <label htmlFor="divid-portafolio" style={{ fontSize: 11.5, color: "#78776f" }}>Incluir dividendos</label>
                   <button onClick={() => descargarPlantillaBase(descargaConDividendos)} style={{ border: "none", background: "none", color: TEAL, fontSize: 11.5, cursor: "pointer", textDecoration: "underline", padding: 0, marginLeft: 4 }}>Descargar plantilla en blanco</button>
                 </div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <input type="file" accept=".xlsx,.xls" onChange={(e) => handleImportBibliotecaBase(e.target.files[0])} style={{ ...miniInputStyle, padding: "6px", flex: 1 }} />
-                  {baseImportCargando && <span style={{ fontSize: 11.5, color: "#78776f" }}>Cargando…</span>}
+                  <input type="file" accept=".xlsx,.xls" onChange={(e) => handleImportExcelPropuesta(e.target.files[0])} style={{ ...miniInputStyle, padding: "6px", flex: 1 }} />
                 </div>
-                {baseImportResumen && <div style={{ marginTop: 8, fontSize: 11.5, color: baseImportResumen.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{baseImportResumen}</div>}
-                {renderBaseImportPreview()}
+                {propuestaImportResumen && <div style={{ marginTop: 8, fontSize: 11.5, color: propuestaImportResumen.startsWith("Error") || propuestaImportResumen.startsWith("No se") ? "#b23b3b" : "#3a7d44" }}>{propuestaImportResumen}</div>}
               </div>
 
               <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 12, marginBottom: 18 }}>
