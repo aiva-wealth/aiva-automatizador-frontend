@@ -279,13 +279,15 @@ export default function App() {
   const [marcaFusionSeleccion, setMarcaFusionSeleccion] = useState({}); // logo_url -> id de marca elegida
   const [marcaFusionando, setMarcaFusionando] = useState("");
 
-  // --- Importación del Excel base de instrumentos (4 pestañas: Fondos,
-  // Fondos distributivos, Acciones, Bonos) — cada pestaña define columnas
-  // distintas según lo que necesita ese tipo de instrumento. Hace upsert
-  // directo por ISIN/Ticker, no pide revisión fila por fila (a diferencia
-  // de "Importar masivo" de logos, acá no hay ambigüedad de matching).
+  // --- Importación del Excel base de instrumentos (3 pestañas: Fondos,
+  // Acciones, Bonos — Fondos distributivos NO es una pestaña aparte, es la
+  // misma pestaña Fondos con 3 columnas extra opcionales, ver
+  // descargarPlantillaBase) — cada pestaña define columnas distintas según
+  // lo que necesita ese tipo de instrumento. Hace upsert directo por
+  // ISIN/Ticker, no pide revisión fila por fila.
   const [baseImportCargando, setBaseImportCargando] = useState(false);
   const [baseImportResumen, setBaseImportResumen] = useState("");
+  const [descargaConDividendos, setDescargaConDividendos] = useState(false);
 
   async function cargarRegistro() {
     setRegistroCargando(true);
@@ -705,12 +707,14 @@ export default function App() {
     return Number.isNaN(n) ? null : n;
   }
 
-  // Sube el Excel base de instrumentos (4 pestañas: Fondos, Fondos
-  // distributivos, Acciones, Bonos) — cada pestaña trae sus propias
-  // columnas (ver plantilla). La fila 1 es una nota, la fila 2 son los
+  // Sube el Excel base de instrumentos (3 pestañas: Fondos, Acciones,
+  // Bonos — Fondos distributivos NO es una pestaña aparte, ver
+  // descargarPlantillaBase). La fila 1 es una nota, la fila 2 son los
   // headers, y desde la fila 3 son datos reales. Hace upsert por ISIN (o
-  // Ticker, en el caso de Acciones — se guarda en la misma columna isin,
-  // igual que ya hace "agregarActivoNuevo" para activos sueltos).
+  // Ticker, en el caso de Acciones). Las columnas "%" e "Inversión (USD)"
+  // están en la plantilla solo para que se parezca a la tabla del PPT —
+  // son datos de cada propuesta puntual, no de la biblioteca, así que se
+  // ignoran acá (no se guardan, `fondos` no tiene esas columnas).
   async function handleImportBibliotecaBase(file) {
     if (!file) return;
     setBaseImportCargando(true);
@@ -719,54 +723,61 @@ export default function App() {
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: "array", cellDates: true });
 
-      const specs = [
-        { sheet: "Fondos", tipo: "fondo" },
-        { sheet: "Fondos distributivos", tipo: "fondo_distributivo" },
-        { sheet: "Acciones", tipo: "accion" },
-        { sheet: "Bonos", tipo: "bono" },
-      ];
-
+      const nombresPestana = ["Fondos", "Acciones", "Bonos"];
       let totalCargados = 0;
       const erroresPorPestana = [];
 
-      for (const { sheet, tipo } of specs) {
+      for (const sheet of nombresPestana) {
         const ws = wb.Sheets[sheet];
         if (!ws) continue; // pestaña no presente en este Excel puntual, se saltea sin marcar error
 
         const filas = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
         const headers = (filas[1] || []).map((h) => (h == null ? "" : String(h).trim()));
         const filasDatos = filas.slice(2).filter((r) => r.some((v) => v !== null && v !== ""));
+        // la pestaña Fondos puede o no traer las columnas de dividendo,
+        // según se haya tildado "Incluir dividendos" al descargarla — acá
+        // no importa cuál se usó, se detecta solo mirando los headers.
+        const tieneColumnasDividendo = headers.includes("Dividendo (%)");
 
         const registros = filasDatos.map((r) => {
           const obj = {};
           headers.forEach((h, i) => { obj[h] = r[i]; });
 
-          const codigo = tipo === "accion" ? obj["Ticker"] : obj["ISIN"];
+          const codigo = sheet === "Acciones" ? obj["Ticker"] : obj["Código"];
           const registro = {
             isin: codigo ? String(codigo).trim() : "",
             nombre: obj["Nombre"] ? String(obj["Nombre"]).trim() : "",
             sector: obj["Sector"] || null,
             categoria: obj["Categoría"] || null,
-            tipo_instrumento: tipo,
           };
 
-          if (tipo === "fondo" || tipo === "fondo_distributivo" || tipo === "accion") {
+          if (sheet === "Fondos") {
+            // distributivo o no se decide FILA POR FILA: si esta fila
+            // puntual trae un Dividendo (%) cargado, es distributivo —
+            // así una misma planilla puede tener de los dos tipos mezclados.
+            const dividendoPct = tieneColumnasDividendo ? excelValueToNumber(obj["Dividendo (%)"]) : null;
+            const esDistributivo = dividendoPct !== null && dividendoPct > 0;
+            registro.tipo_instrumento = esDistributivo ? "fondo_distributivo" : "fondo";
             registro.ytd = excelValueToNumber(obj["Rend. YTD"]);
             registro.y1 = excelValueToNumber(obj["Rend. 1 año"]);
             registro.y3 = excelValueToNumber(obj["Rend. 3 años"]);
             registro.y5 = excelValueToNumber(obj["Rend. 5 años"]);
-          }
-          if (tipo === "fondo" || tipo === "fondo_distributivo") {
             registro.ter = excelValueToNumber(obj["TER"]);
-          }
-          if (tipo === "fondo_distributivo") {
-            registro.dividendo_pct = excelValueToNumber(obj["Dividendo (%)"]);
-            registro.frecuencia_dividendo = obj["Frec. Dividendo"] || null;
-          }
-          if (tipo === "bono") {
+            if (esDistributivo) {
+              registro.dividendo_pct = dividendoPct;
+              registro.frecuencia_dividendo = obj["Frec. Dividendo"] || null;
+            }
+          } else if (sheet === "Acciones") {
+            registro.tipo_instrumento = "accion";
+            registro.ytd = excelValueToNumber(obj["Rend. YTD"]);
+            registro.y1 = excelValueToNumber(obj["Rend. 1 año"]);
+            registro.y3 = excelValueToNumber(obj["Rend. 3 años"]);
+            registro.y5 = excelValueToNumber(obj["Rend. 5 años"]);
+          } else if (sheet === "Bonos") {
+            registro.tipo_instrumento = "bono";
             registro.cupon_pct = excelValueToNumber(obj["Cupón (%)"]);
             registro.rating = obj["Rating S&P"] || null;
-            registro.price = excelValueToNumber(obj["Price"]);
+            registro.price = excelValueToNumber(obj["Price**"] ?? obj["Price"]);
             registro.yield_pct = excelValueToNumber(obj["Yield"]);
             registro.maturity = excelValueToDateStr(obj["Maturity"]);
           }
@@ -794,45 +805,47 @@ export default function App() {
     }
   }
 
-  // Genera y descarga la plantilla del Excel base (4 pestañas) desde acá
+  // Genera y descarga la plantilla del Excel base (3 pestañas) desde acá
   // mismo — no depende de un archivo guardado en ningún lado, así siempre
   // está actualizada con las columnas que el importador realmente espera.
-  function descargarPlantillaBase() {
+  function descargarPlantillaBase(incluirDividendos) {
+    const categoriaNota = `Categoría: ${CATEGORIAS.join(" / ")}.`;
+    const notaComun = " % e Inversión (USD) NO se importan — son datos de cada propuesta puntual, no del instrumento en sí; están acá solo para que la planilla se parezca a la tabla del documento final. Dejalas en blanco tranquilo.";
+
+    const fondosCols = incluirDividendos
+      ? ["%", "Código", "Nombre", "Sector", "Dividendo (%)", "Frec. Dividendo", "Rend. YTD", "Rend. 1 año", "Rend. 3 años", "Rend. 5 años", "Inversión (USD)", "Dividendo anual", "TER", "Categoría"]
+      : ["%", "Código", "Nombre", "Sector", "Rend. YTD", "Rend. 1 año", "Rend. 3 años", "Rend. 5 años", "Inversión (USD)", "TER", "Categoría"];
+    const fondosEjemplo = incluirDividendos
+      ? [null, "IE00B8K7V925", "PIMCO GIS Income Fund", "Global", 6.31, "Mensual", 0.39, 5.15, 5.87, 2.56, null, null, 1.45, "Renta Fija"]
+      : [null, "LU2750480548", "Wellington Total Credit", "Global Flexible", 0.22, 3.8, 6.1, 3.2, null, 1.25, "Renta Fija"];
+    const fondosNota = (incluirDividendos
+      ? "Fila por fila: si un fondo tiene algo cargado en Dividendo (%), se guarda como fondo distributivo — si lo dejás vacío, es un fondo normal. Se pueden mezclar los dos tipos en la misma pestaña."
+      : "Sin columnas de dividendo — si algún fondo reparte, descargá de nuevo tildando 'Incluir dividendos' antes de bajar el archivo.") + " " + categoriaNota + notaComun;
+
     const specs = [
-      {
-        sheet: "Fondos",
-        cols: ["ISIN", "Nombre", "Sector", "Categoría", "Rend. YTD", "Rend. 1 año", "Rend. 3 años", "Rend. 5 años", "TER"],
-        nota: "Categoría: Renta Fija / Multi Activo / Renta Variable / Alternativos Líquidos. Rendimientos y TER en % (ej: 3.8 = 3,8%). Completar desde la fila 3 — la fila 2 es el header, no tocar.",
-        ejemplo: ["LU2750480548", "Wellington Total Credit", "Global Flexible", "Renta Fija", 0.22, 3.8, 6.1, 3.2, 1.25],
-      },
-      {
-        sheet: "Fondos distributivos",
-        cols: ["ISIN", "Nombre", "Sector", "Categoría", "Rend. YTD", "Rend. 1 año", "Rend. 3 años", "Rend. 5 años", "TER", "Dividendo (%)", "Frec. Dividendo"],
-        nota: "Igual que la pestaña Fondos + Dividendo (%) y Frec. Dividendo (Mensual / Trimestral / Anual, etc.). Son fondos que pagan renta periódica.",
-        ejemplo: ["IE00B8K7V925", "PIMCO GIS Income Fund", "Global", "Renta Fija", 0.39, 5.15, 5.87, 2.56, 1.45, 6.31, "Mensual"],
-      },
+      { sheet: "Fondos", cols: fondosCols, nota: fondosNota, ejemplo: fondosEjemplo },
       {
         sheet: "Acciones",
-        cols: ["Ticker", "Nombre", "Sector", "Categoría", "Rend. YTD", "Rend. 1 año", "Rend. 3 años", "Rend. 5 años"],
-        nota: "Acciones individuales — sin TER (no tienen costo de gestión).",
-        ejemplo: ["ORCL", "Oracle Corp", "Tecnología", "Renta Variable", -21.45, -34.83, 10.67, 12.71],
+        cols: ["%", "Ticker", "Nombre", "Sector", "Rend. YTD", "Rend. 1 año", "Rend. 3 años", "Rend. 5 años", "Inversión (USD)", "Categoría"],
+        nota: "Acciones individuales — sin TER (no tienen costo de gestión)." + " " + categoriaNota + notaComun,
+        ejemplo: [null, "ORCL", "Oracle Corp", "Tecnología", -21.45, -34.83, 10.67, 12.71, null, "Renta Variable"],
       },
       {
         sheet: "Bonos",
-        cols: ["ISIN", "Nombre", "Sector", "Categoría", "Cupón (%)", "Rating S&P", "Price", "Yield", "Maturity"],
-        nota: "Bonos individuales. Maturity en formato AAAA-MM-DD. Price y Yield al momento de cargar el dato.",
-        ejemplo: ["US03938LBE39", "Arcelormittal SA", "Basic Materials", "Renta Fija", 6.55, "BBB", 102.27, 4.79, "2027-11-29"],
+        cols: ["%", "Código", "Nombre", "Sector", "Cupón (%)", "Rating S&P", "Price**", "Yield", "Maturity", "Cupón Anual", "Inversión (USD)", "Categoría"],
+        nota: "Bonos individuales. Maturity en formato AAAA-MM-DD." + " " + categoriaNota + notaComun,
+        ejemplo: [null, "US03938LBE39", "Arcelormittal SA", "Basic Materials", 6.55, "BBB", 102.27, 4.79, "2027-11-29", null, null, "Renta Fija"],
       },
     ];
 
     const wb = XLSX.utils.book_new();
     specs.forEach(({ sheet, cols, nota, ejemplo }) => {
       const ws = XLSX.utils.aoa_to_sheet([[nota], cols, ejemplo]);
-      ws["!cols"] = cols.map((c) => ({ wch: c === "Nombre" ? 32 : Math.max(14, c.length + 4) }));
+      ws["!cols"] = cols.map((c) => ({ wch: c === "Nombre" ? 32 : Math.max(12, c.length + 3) }));
       ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: cols.length - 1 } }];
       XLSX.utils.book_append_sheet(wb, ws, sheet);
     });
-    XLSX.writeFile(wb, "Biblioteca_instrumentos_AIVA.xlsx");
+    XLSX.writeFile(wb, `Biblioteca_instrumentos_AIVA${incluirDividendos ? "_con_dividendos" : ""}.xlsx`);
   }
 
   // --- Importación masiva ---
@@ -1581,7 +1594,12 @@ export default function App() {
 
             <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 12, margin: "12px 0" }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: NAVY, marginBottom: 4 }}>Importar biblioteca base (Fondos / Fondos distributivos / Acciones / Bonos)</div>
-              <div style={{ fontSize: 11, color: "#78776f", marginBottom: 8 }}>El Excel con las 4 pestañas que mantiene el equipo — carga directo por ISIN/Ticker, sin pedir revisión. <button onClick={descargarPlantillaBase} style={{ border: "none", background: "none", color: TEAL, fontSize: 11, cursor: "pointer", textDecoration: "underline", padding: 0 }}>Descargar plantilla en blanco</button></div>
+              <div style={{ fontSize: 11, color: "#78776f", marginBottom: 8 }}>El Excel con las pestañas que mantiene el equipo — carga directo por ISIN/Ticker, sin pedir revisión.</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                <input type="checkbox" id="divid-biblioteca" checked={descargaConDividendos} onChange={(e) => setDescargaConDividendos(e.target.checked)} />
+                <label htmlFor="divid-biblioteca" style={{ fontSize: 11, color: "#78776f" }}>Incluir columnas de dividendos en la pestaña Fondos</label>
+                <button onClick={() => descargarPlantillaBase(descargaConDividendos)} style={{ border: "none", background: "none", color: TEAL, fontSize: 11, cursor: "pointer", textDecoration: "underline", padding: 0, marginLeft: 4 }}>Descargar plantilla en blanco</button>
+              </div>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <input type="file" accept=".xlsx,.xls" onChange={(e) => handleImportBibliotecaBase(e.target.files[0])} style={{ ...miniInputStyle, padding: "6px", flex: 1 }} />
                 {baseImportCargando && <span style={{ fontSize: 11.5, color: "#78776f" }}>Cargando…</span>}
@@ -1936,9 +1954,11 @@ export default function App() {
 
               <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 12, marginBottom: 18 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: NAVY, marginBottom: 4 }}>¿Falta un instrumento en la biblioteca?</div>
-                <div style={{ fontSize: 11.5, color: "#78776f", marginBottom: 8 }}>
-                  Subí el Excel base (Fondos / Fondos distributivos / Acciones / Bonos) para cargarlo de una — o{" "}
-                  <button onClick={descargarPlantillaBase} style={{ border: "none", background: "none", color: TEAL, fontSize: 11.5, cursor: "pointer", textDecoration: "underline", padding: 0 }}>descargá la plantilla en blanco</button> si todavía no la tenés.
+                <div style={{ fontSize: 11.5, color: "#78776f", marginBottom: 8 }}>Subí el Excel base (Fondos / Acciones / Bonos) para cargarlo de una.</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                  <input type="checkbox" id="divid-portafolio" checked={descargaConDividendos} onChange={(e) => setDescargaConDividendos(e.target.checked)} />
+                  <label htmlFor="divid-portafolio" style={{ fontSize: 11.5, color: "#78776f" }}>Incluir dividendos</label>
+                  <button onClick={() => descargarPlantillaBase(descargaConDividendos)} style={{ border: "none", background: "none", color: TEAL, fontSize: 11.5, cursor: "pointer", textDecoration: "underline", padding: 0, marginLeft: 4 }}>Descargar plantilla en blanco</button>
                 </div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <input type="file" accept=".xlsx,.xls" onChange={(e) => handleImportBibliotecaBase(e.target.files[0])} style={{ ...miniInputStyle, padding: "6px", flex: 1 }} />
