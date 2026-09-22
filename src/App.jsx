@@ -1423,8 +1423,8 @@ export default function App() {
   }
 
   // Importa el excel "Open Tax Lots" de StoneX para el portafolio actual de
-  // una Propuesta nueva — nombre, importe y costo (para poder calcular el
-  // rendimiento solo, igual que en Revisión).
+  // una Propuesta nueva — nombre, ISIN, importe y costo (para poder
+  // calcular el rendimiento solo e imprimir la misma tabla que Revisión).
   async function handleExcelImportPropuestaActual(file) {
     if (!file) return;
     const buf = await file.arrayBuffer();
@@ -1439,7 +1439,7 @@ export default function App() {
         const unitCost = Number(r["Unit Cost"]) || 0;
         const importe = Math.round(Number(r["Mkt Value"]) || (usdPrice * cantidad) || 0);
         const costo = Math.round(Number(r["Adjusted Cost"]) || (unitCost * cantidad) || 0);
-        return { nombre: r["Description"] || "", importe, costo };
+        return { nombre: r["Description"] || "", isin: r["Symbol/ID"] || "", importe, costo };
       })
       .filter((a) => a.nombre);
     setCurrentAssets((prev) => [...prev, ...nuevos]);
@@ -1582,6 +1582,7 @@ export default function App() {
               const importe = Math.round(Number(a.importe) || 0);
               return {
                 nombre: a.nombre,
+                isin: a.isin || "",
                 importe,
                 pct: total ? Math.round(importe / total * 100) : 0,
                 costo,
@@ -1589,7 +1590,7 @@ export default function App() {
               };
             });
             if (cashActualPropuesta) {
-              filas.push({ nombre: "Cash", importe: Math.round(Number(cashActualPropuesta)), pct: total ? Math.round(Number(cashActualPropuesta) / total * 100) : 0, costo: 0, rendimiento: 0 });
+              filas.push({ nombre: "Cash", isin: "", importe: Math.round(Number(cashActualPropuesta)), pct: total ? Math.round(Number(cashActualPropuesta) / total * 100) : 0, costo: 0, rendimiento: 0 });
             }
             return filas;
           })(),
@@ -2345,7 +2346,7 @@ export default function App() {
               <Field label="Importar desde Excel (Open Tax Lots de StoneX)" hint="Toma Description, Mkt Value y Adjusted Cost de la hoja 'By Security' y agrega una fila por activo.">
                 <FileInputButton accept=".xlsx,.xls" onChange={(e) => handleExcelImportPropuestaActual(e.target.files[0])} label="Elegir Excel" />
               </Field>
-              <button onClick={() => setCurrentAssets((prev) => [...prev, { nombre: "", importe: 0, costo: 0 }])} style={{ marginBottom: 12, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar activo a mano</button>
+              <button onClick={() => setCurrentAssets((prev) => [...prev, { nombre: "", isin: "", importe: 0, costo: 0 }])} style={{ marginBottom: 12, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar activo a mano</button>
               {(() => {
                 const total = currentAssets.reduce((s, a) => s + (Number(a.importe) || 0), 0) + (Number(cashActualPropuesta) || 0);
                 return currentAssets.map((a, i) => {
@@ -2353,9 +2354,12 @@ export default function App() {
                   const costo = Number(a.costo) || 0;
                   const rendimiento = costo ? (((Number(a.importe) || 0) - costo) / costo * 100).toFixed(1) : "0.0";
                   return (
-                    <div key={i} style={{ display: "grid", gridTemplateColumns: "1.6fr 0.7fr 1fr 1fr 0.9fr auto", gap: 10, marginBottom: 8, alignItems: "end" }}>
+                    <div key={i} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 0.6fr 1fr 1fr 0.9fr auto", gap: 10, marginBottom: 8, alignItems: "end" }}>
                       <MiniField label="Nombre">
                         <input style={miniInputStyle} value={a.nombre} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, nombre: e.target.value } : x))} />
+                      </MiniField>
+                      <MiniField label="ISIN">
+                        <input style={miniInputStyle} value={a.isin || ""} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, isin: e.target.value } : x))} />
                       </MiniField>
                       <MiniField label="% (calculado)">
                         <div style={{ ...miniInputStyle, background: CREAM, fontWeight: 600 }}>{pct}%</div>
