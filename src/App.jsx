@@ -2010,11 +2010,11 @@ export default function App() {
     <div style={{ fontFamily: "Montserrat, sans-serif", background: CREAM, minHeight: "100vh", display: "flex" }}>
       <div style={{ width: 234, flexShrink: 0, background: NAVY, display: "flex", flexDirection: "column", padding: "26px 16px", minHeight: "100vh", boxSizing: "border-box" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "0 8px 26px 8px" }}>
-          <svg width="90" height="16" viewBox="0 0 140 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <polygon points="4,22 19,2 34,22" fill="#D1DFEA" />
-            <rect x="38" y="2" width="5" height="20" fill="#D1DFEA" />
-            <polygon points="47,2 62,22 77,2" fill="#D1DFEA" />
-            <polygon points="83,22 98,2 113,22" fill="#D1DFEA" />
+          <svg width="82" height="21" viewBox="0 0 138 35" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M 4.00 34.64 Q 0.00 34.64 2.00 31.18 L 18.00 3.46 Q 20.00 0.00 22.00 3.46 L 38.00 31.18 Q 40.00 34.64 36.00 34.64 Z" fill="#D1DFEA" />
+            <rect x="46" y="0" width="12" height="34.64" rx="4" fill="#D1DFEA" />
+            <path d="M 68.00 0.00 Q 64.00 0.00 66.00 3.46 L 82.00 31.18 Q 84.00 34.64 86.00 31.18 L 102.00 3.46 Q 104.00 0.00 100.00 0.00 Z" fill="#D1DFEA" />
+            <path d="M 102.00 34.64 Q 98.00 34.64 100.00 31.18 L 116.00 3.46 Q 118.00 0.00 120.00 3.46 L 136.00 31.18 Q 138.00 34.64 134.00 34.64 Z" fill="#D1DFEA" />
           </svg>
           <div style={{ color: "#D1DFEA", fontWeight: 400, fontSize: 13 }}>Asset</div>
         </div>
