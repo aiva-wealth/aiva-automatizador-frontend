@@ -171,6 +171,29 @@ const secondaryButtonStyle = {
 // se esconde y se dispara con un botón normal al lado del nombre elegido.
 // También funciona como dropzone: se puede arrastrar el archivo directo
 // sobre el botón/nombre, no hace falta abrir el diálogo si no se quiere.
+// Torta simple en SVG (sin librerías externas) — segments: [{label, value (0-1), color}]
+function DonutChart({ segments, size = 170, strokeWidth = 30 }) {
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  let cumulative = 0;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      {segments.filter((s) => s.value > 0).map((s, i) => {
+        const dash = s.value * circumference;
+        const gap = Math.max(circumference - dash, 0);
+        const rotation = cumulative * 360 - 90;
+        cumulative += s.value;
+        return (
+          <circle
+            key={i} cx={size / 2} cy={size / 2} r={radius} fill="none" stroke={s.color} strokeWidth={strokeWidth}
+            strokeDasharray={`${dash} ${gap}`} transform={`rotate(${rotation} ${size / 2} ${size / 2})`}
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
 function FileInputButton({ accept, multiple, onChange, label }) {
   const inputRef = useRef(null);
   const [fileName, setFileName] = useState("");
@@ -278,6 +301,10 @@ export default function App() {
     return init;
   });
   const [columnasAbiertoPara, setColumnasAbiertoPara] = useState(null); // tipo cuyo panel de columnas está abierto
+  const [donutManual, setDonutManual] = useState(false);
+  const [donutValoresManual, setDonutValoresManual] = useState({
+    "Fondos Renta Fija": 0, "Fondos Renta Variable": 0, "Fondos Multi Asset": 0, "Cash": 0, "Fondos Alternativos Liquidos": 0,
+  });
 
   // --- Descripción de activos: selección manual por categoría, ---
   // independiente de lo que se haya cargado en Portafolio propuesto
@@ -1485,6 +1512,44 @@ export default function App() {
     return { ...a, rendimiento, pct };
   }
 
+  // --- Asset allocation: valor automático (derivado de los % cargados en
+  // Portafolio propuesto) — se usa como base tanto en buildConfig como en
+  // la vista previa editable de las dos tortas.
+  function calcularDonut1Auto() {
+    const byCat = {};
+    proposedAssets.forEach((a) => { byCat[a.categoria] = (byCat[a.categoria] || 0) + (a.pct || 0) / 100; });
+    const cashMonto = Number(cashManualPropuesta) || 0;
+    return {
+      "Fondos Renta Fija": byCat["Renta Fija"] || 0,
+      "Fondos Renta Variable": byCat["Renta Variable"] || 0,
+      "Fondos Multi Asset": byCat["Multi Activo"] || 0,
+      "Cash": montoInvertir ? cashMonto / montoInvertir : 0,
+      "Fondos Alternativos Liquidos": byCat["Alternativos Líquidos"] || 0,
+    };
+  }
+
+  function donut1Actual() {
+    if (!donutManual) return calcularDonut1Auto();
+    const out = {};
+    Object.keys(donutValoresManual).forEach((k) => { out[k] = (Number(donutValoresManual[k]) || 0) / 100; });
+    return out;
+  }
+
+  function donut2DesdeDonut1(d1) {
+    return {
+      "Fondos Renta Fija + Cash": (d1["Fondos Renta Fija"] || 0) + (d1["Cash"] || 0),
+      "Fondos Renta Variable": (d1["Fondos Renta Variable"] || 0) + (d1["Fondos Multi Asset"] || 0) + (d1["Fondos Alternativos Liquidos"] || 0),
+    };
+  }
+
+  function activarEdicionDonut() {
+    const auto = calcularDonut1Auto();
+    const enPct = {};
+    Object.keys(auto).forEach((k) => { enPct[k] = Math.round(auto[k] * 1000) / 10; });
+    setDonutValoresManual(enPct);
+    setDonutManual(true);
+  }
+
   function buildConfig(proposedAssetsOverride, descSeleccionOverride) {
     const assetsAUsar = proposedAssetsOverride || proposedAssets;
     const descAUsar = descSeleccionOverride || descSeleccion;
@@ -1523,19 +1588,8 @@ export default function App() {
 
     const cashMonto = Number(cashManualPropuesta) || 0;
 
-    const byCat = {};
-    assetsAUsar.forEach((a) => { byCat[a.categoria] = (byCat[a.categoria] || 0) + (a.pct || 0) / 100; });
-    const donut1 = {
-      "Fondos Renta Fija": byCat["Renta Fija"] || 0,
-      "Fondos Renta Variable": byCat["Renta Variable"] || 0,
-      "Fondos Multi Asset": byCat["Multi Activo"] || 0,
-      "Cash": montoInvertir ? cashMonto / montoInvertir : 0,
-      "Fondos Alternativos Liquidos": byCat["Alternativos Líquidos"] || 0,
-    };
-    const donut2 = {
-      "Fondos Renta Fija + Cash": (donut1["Fondos Renta Fija"] || 0) + (donut1["Cash"] || 0),
-      "Fondos Renta Variable": (donut1["Fondos Renta Variable"] || 0) + (donut1["Fondos Multi Asset"] || 0) + (donut1["Fondos Alternativos Liquidos"] || 0),
-    };
+    const donut1 = donut1Actual();
+    const donut2 = donut2DesdeDonut1(donut1);
 
     const fondosPorCategoria = {
       "Renta Fija & Multi Activo": descAUsar["Renta Fija & Multi Activo"].map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "", logo_url: a.logo_url || "" })),
@@ -2543,6 +2597,60 @@ export default function App() {
                   </div>
                 );
               })}
+
+              {(() => {
+                const d1 = donut1Actual();
+                const d2 = donut2DesdeDonut1(d1);
+                const colores1 = { "Fondos Renta Fija": NAVY, "Fondos Renta Variable": "#8B8A80", "Fondos Multi Asset": "#C9C4B6", "Cash": LIGHTBLUE, "Fondos Alternativos Liquidos": TEAL };
+                const colores2 = { "Fondos Renta Fija + Cash": TEAL, "Fondos Renta Variable": NAVY };
+                const totalManual = Object.values(donutValoresManual).reduce((s, v) => s + (Number(v) || 0), 0);
+                return (
+                  <div style={{ marginTop: 26, borderTop: "1px solid #f2f0e9", paddingTop: 20 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 700, color: NAVY }}>Asset Allocation</div>
+                      {donutManual ? (
+                        <button onClick={() => setDonutManual(false)} style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>Volver a automático</button>
+                      ) : (
+                        <button onClick={activarEdicionDonut} style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>Editar % a mano</button>
+                      )}
+                    </div>
+
+                    <div style={{ display: "flex", gap: 40, flexWrap: "wrap", alignItems: "flex-start" }}>
+                      <div style={{ textAlign: "center" }}>
+                        <DonutChart segments={Object.keys(d1).map((k) => ({ label: k, value: d1[k], color: colores1[k] }))} />
+                        <div style={{ fontSize: 11, color: "#78776f", marginTop: 6 }}>Por categoría</div>
+                      </div>
+                      <div style={{ textAlign: "center" }}>
+                        <DonutChart segments={Object.keys(d2).map((k) => ({ label: k, value: d2[k], color: colores2[k] }))} />
+                        <div style={{ fontSize: 11, color: "#78776f", marginTop: 6 }}>Renta Fija + Cash vs. Renta Variable</div>
+                      </div>
+
+                      <div style={{ flex: 1, minWidth: 240 }}>
+                        {Object.keys(donutValoresManual).map((k) => (
+                          <div key={k} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                            <div style={{ width: 10, height: 10, borderRadius: "50%", background: colores1[k], flexShrink: 0 }} />
+                            <div style={{ fontSize: 12, flex: 1 }}>{k.replace("Fondos ", "")}</div>
+                            {donutManual ? (
+                              <input
+                                type="number" style={{ ...miniInputStyle, width: 70, padding: "5px 8px" }}
+                                value={donutValoresManual[k]}
+                                onChange={(e) => setDonutValoresManual((prev) => ({ ...prev, [k]: e.target.value }))}
+                              />
+                            ) : (
+                              <div style={{ fontSize: 12, fontWeight: 600, width: 70, textAlign: "right" }}>{(d1[k] * 100).toFixed(1)}%</div>
+                            )}
+                          </div>
+                        ))}
+                        {donutManual && (
+                          <div style={{ fontSize: 11.5, marginTop: 6, color: Math.abs(totalManual - 100) < 0.5 ? "#3a7d44" : "#b23b3b" }}>
+                            Total: {totalManual.toFixed(1)}% {Math.abs(totalManual - 100) < 0.5 ? "✓" : "— debería sumar 100%"}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </Section>
           )}
 
