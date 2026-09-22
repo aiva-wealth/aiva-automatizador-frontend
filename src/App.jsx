@@ -2009,9 +2009,14 @@ export default function App() {
   return (
     <div style={{ fontFamily: "Montserrat, sans-serif", background: CREAM, minHeight: "100vh", display: "flex" }}>
       <div style={{ width: 234, flexShrink: 0, background: NAVY, display: "flex", flexDirection: "column", padding: "26px 16px", minHeight: "100vh", boxSizing: "border-box" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 8px 26px 8px" }}>
-          <div style={{ width: 28, height: 28, borderRadius: 8, background: TEAL, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, color: "#fff", fontSize: 13 }}>A</div>
-          <div style={{ color: "#fff", fontWeight: 700, fontSize: 14 }}>AIVA</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "0 8px 26px 8px" }}>
+          <svg width="78" height="22" viewBox="0 0 120 34" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <polygon points="5,30 15,4 25,30" fill="#D1DFEA" />
+            <rect x="30" y="4" width="4" height="26" fill="#D1DFEA" />
+            <polygon points="40,4 50,30 60,4" fill="#D1DFEA" />
+            <polygon points="65,30 75,4 85,30" fill="#D1DFEA" />
+          </svg>
+          <div style={{ color: "#D1DFEA", fontWeight: 400, fontSize: 13 }}>Wealth</div>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
           {[
