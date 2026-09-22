@@ -171,6 +171,8 @@ const secondaryButtonStyle = {
 // se esconde y se dispara con un botón normal al lado del nombre elegido.
 // También funciona como dropzone: se puede arrastrar el archivo directo
 // sobre el botón/nombre, no hace falta abrir el diálogo si no se quiere.
+const PALETA_DONUT = ["#16223A", "#8B8A80", "#C9C4B6", "#D1DFEA", "#557787", "#A9762B", "#6B4FA0", "#3A7D44", "#B23B3B", "#2C5F7C"];
+
 // Torta simple en SVG (sin librerías externas) — segments: [{label, value (0-1), color}]
 function DonutChart({ segments, size = 170, strokeWidth = 30 }) {
   const radius = (size - strokeWidth) / 2;
@@ -301,10 +303,19 @@ export default function App() {
     return init;
   });
   const [columnasAbiertoPara, setColumnasAbiertoPara] = useState(null); // tipo cuyo panel de columnas está abierto
-  const [donutManual, setDonutManual] = useState(false);
-  const [donutValoresManual, setDonutValoresManual] = useState({
-    "Fondos Renta Fija": 0, "Fondos Renta Variable": 0, "Fondos Multi Asset": 0, "Cash": 0, "Fondos Alternativos Liquidos": 0,
-  });
+  // Columnas agregadas a mano por el usuario (sin dato de biblioteca detrás
+  // — se completan a mano por fila). "accion" comparte las de "fondo" ya
+  // que van a la misma tabla en el PPT.
+  const [columnasExtra, setColumnasExtra] = useState({ fondo: [], bono: [], fondo_distributivo: [] });
+  const [nuevaColumnaNombre, setNuevaColumnaNombre] = useState("");
+
+  // Asset allocation: dos tortas independientes. null = sigue automática
+  // (recalculada en vivo a partir de lo cargado); array = quedó fija
+  // porque el usuario la editó y apretó Guardar.
+  const [donut1Fijado, setDonut1Fijado] = useState(null);
+  const [donut2Fijado, setDonut2Fijado] = useState(null);
+  const [donutAbierto, setDonutAbierto] = useState(null); // '1' | '2' | null
+  const [donutDraft, setDonutDraft] = useState([]); // borrador mientras se edita la que esté abierta
 
   // --- Descripción de activos: selección manual por categoría, ---
   // independiente de lo que se haya cargado en Portafolio propuesto
@@ -1515,7 +1526,7 @@ export default function App() {
   // --- Asset allocation: valor automático (derivado de los % cargados en
   // Portafolio propuesto) — se usa como base tanto en buildConfig como en
   // la vista previa editable de las dos tortas.
-  function calcularDonut1Auto() {
+  function calcularDonut1AutoObj() {
     const byCat = {};
     proposedAssets.forEach((a) => { byCat[a.categoria] = (byCat[a.categoria] || 0) + (a.pct || 0) / 100; });
     const cashMonto = Number(cashManualPropuesta) || 0;
@@ -1528,26 +1539,78 @@ export default function App() {
     };
   }
 
-  function donut1Actual() {
-    if (!donutManual) return calcularDonut1Auto();
-    const out = {};
-    Object.keys(donutValoresManual).forEach((k) => { out[k] = (Number(donutValoresManual[k]) || 0) / 100; });
-    return out;
-  }
-
-  function donut2DesdeDonut1(d1) {
+  function donut2DesdeDonut1Obj(d1) {
     return {
       "Fondos Renta Fija + Cash": (d1["Fondos Renta Fija"] || 0) + (d1["Cash"] || 0),
       "Fondos Renta Variable": (d1["Fondos Renta Variable"] || 0) + (d1["Fondos Multi Asset"] || 0) + (d1["Fondos Alternativos Liquidos"] || 0),
     };
   }
 
-  function activarEdicionDonut() {
-    const auto = calcularDonut1Auto();
-    const enPct = {};
-    Object.keys(auto).forEach((k) => { enPct[k] = Math.round(auto[k] * 1000) / 10; });
-    setDonutValoresManual(enPct);
-    setDonutManual(true);
+  // Objeto {label: fracción 0-1} -> array editable [{id,label,pct en 0-100}]
+  function objAArrayDonut(obj) {
+    return Object.keys(obj).map((label) => ({ id: label, label, pct: Math.round(obj[label] * 1000) / 10 }));
+  }
+  function arrayDonutAObj(arr) {
+    const out = {};
+    arr.forEach((it) => { out[(it.label || "").trim() || "(sin nombre)"] = (Number(it.pct) || 0) / 100; });
+    return out;
+  }
+
+  // Valor "oficial" de cada torta ahora mismo: si el usuario la fijó
+  // (apretó Guardar alguna vez), esa; si no, la automática recalculada en
+  // vivo — donut2 automática se deriva de donut1 (fijada o automática).
+  function donut1ActualObj() {
+    return donut1Fijado ? arrayDonutAObj(donut1Fijado) : calcularDonut1AutoObj();
+  }
+  function donut2ActualObj() {
+    return donut2Fijado ? arrayDonutAObj(donut2Fijado) : donut2DesdeDonut1Obj(donut1ActualObj());
+  }
+
+  function abrirEdicionDonut(cual) {
+    const actual = cual === "1" ? donut1ActualObj() : donut2ActualObj();
+    setDonutDraft(objAArrayDonut(actual));
+    setDonutAbierto(cual);
+  }
+  function cerrarEdicionDonut() {
+    setDonutAbierto(null);
+    setDonutDraft([]);
+  }
+  function guardarDonut() {
+    if (donutAbierto === "1") setDonut1Fijado(donutDraft);
+    else if (donutAbierto === "2") setDonut2Fijado(donutDraft);
+    cerrarEdicionDonut();
+  }
+  function volverAutomaticoDonut(cual) {
+    if (cual === "1") setDonut1Fijado(null);
+    else setDonut2Fijado(null);
+    if (donutAbierto === cual) cerrarEdicionDonut();
+  }
+  function agregarCategoriaDonut() {
+    setDonutDraft((prev) => [...prev, { id: `nueva_${Date.now()}`, label: "Nueva categoría", pct: 0 }]);
+  }
+  function quitarCategoriaDonut(id) {
+    setDonutDraft((prev) => prev.filter((it) => it.id !== id));
+  }
+  function actualizarCategoriaDonut(id, campo, valor) {
+    setDonutDraft((prev) => prev.map((it) => (it.id === id ? { ...it, [campo]: valor } : it)));
+  }
+
+  // --- Columnas agregadas a mano por el usuario (Portafolio propuesto) ---
+  function agregarColumnaExtra(tipo) {
+    if (!nuevaColumnaNombre.trim()) return;
+    const key = `extra_${Date.now()}`;
+    const tipoDestino = tipo === "accion" ? "fondo" : tipo; // acciones comparten tabla con fondos en el PPT
+    setColumnasExtra((prev) => ({ ...prev, [tipoDestino]: [...prev[tipoDestino], { key, label: nuevaColumnaNombre.trim(), esExtra: true }] }));
+    setColumnasConfig((prev) => ({ ...prev, [tipo]: [...prev[tipo], key] }));
+    setNuevaColumnaNombre("");
+  }
+  function quitarColumnaExtra(tipo, key) {
+    const tipoDestino = tipo === "accion" ? "fondo" : tipo;
+    setColumnasExtra((prev) => ({ ...prev, [tipoDestino]: prev[tipoDestino].filter((c) => c.key !== key) }));
+    setColumnasConfig((prev) => ({ ...prev, [tipo]: prev[tipo].filter((k) => k !== key) }));
+  }
+  function actualizarProposedExtra(idx, label, valor) {
+    setProposedAssets((prev) => prev.map((a, i) => (i === idx ? { ...a, extra: { ...(a.extra || {}), [label]: valor } } : a)));
   }
 
   function buildConfig(proposedAssetsOverride, descSeleccionOverride) {
@@ -1563,19 +1626,20 @@ export default function App() {
         .filter((a) => a.categoria === label && (a.tipo_instrumento === "fondo" || a.tipo_instrumento === "accion" || !a.tipo_instrumento))
         .map((a) => ({
           isin: a.isin, nombre: a.nombre, sector: a.sector || "", ytd: a.ytd || 0, y1: a.y1 || 0, y3: a.y3 || 0, y5: a.y5 || 0, pct: a.pct, monto: a.monto, ter: a.ter || 0,
+          extra: a.extra || {},
         })),
     })).filter((c) => c.fondos.length > 0);
 
-    // Bonos y Fondos distributivos: cada uno arma su propia página en el
-    // PPT (agregar_slide_bonos / agregar_slide_distributivos), solo si hay
-    // al menos uno cargado. Cupón anual y Dividendo anual se calculan acá
+    // Bonos y Fondos distributivos: cada uno arma su propia sección
+    // apilada en la misma página de Portafolio Propuesto, solo si hay al
+    // menos uno cargado. Cupón anual y Dividendo anual se calculan acá
     // mismo a partir del monto asignado, no vienen de la biblioteca.
     const bonosPropuesto = assetsAUsar.filter((a) => a.tipo_instrumento === "bono").map((a) => ({
       isin: a.isin, nombre: a.nombre, sector: a.sector || "",
       cupon_pct: a.cupon_pct || 0, rating: a.rating || "", price: a.price || 0,
       yield_pct: a.yield_pct || 0, maturity: a.maturity || "",
       cupon_anual: Math.round((a.monto || 0) * (a.cupon_pct || 0) / 100),
-      pct: a.pct, monto: a.monto,
+      pct: a.pct, monto: a.monto, extra: a.extra || {},
     }));
 
     const fondosDistributivosPropuesto = assetsAUsar.filter((a) => a.tipo_instrumento === "fondo_distributivo").map((a) => ({
@@ -1583,13 +1647,13 @@ export default function App() {
       ytd: a.ytd || 0, y1: a.y1 || 0, y3: a.y3 || 0, y5: a.y5 || 0, ter: a.ter || 0,
       dividendo_pct: a.dividendo_pct || 0, frecuencia_dividendo: a.frecuencia_dividendo || "",
       dividendo_anual: Math.round((a.monto || 0) * (a.dividendo_pct || 0) / 100),
-      pct: a.pct, monto: a.monto,
+      pct: a.pct, monto: a.monto, extra: a.extra || {},
     }));
 
     const cashMonto = Number(cashManualPropuesta) || 0;
 
-    const donut1 = donut1Actual();
-    const donut2 = donut2DesdeDonut1(donut1);
+    const donut1 = donut1ActualObj();
+    const donut2 = donut2ActualObj();
 
     const fondosPorCategoria = {
       "Renta Fija & Multi Activo": descAUsar["Renta Fija & Multi Activo"].map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "", logo_url: a.logo_url || "" })),
@@ -1659,6 +1723,11 @@ export default function App() {
       asset_allocation_donut2: donut2,
       fondos_por_categoria: fondosPorCategoria,
       bonos_propuesto: bonosPropuesto,
+      columnas_extra: {
+        fondo: columnasExtra.fondo.map((c) => c.label),
+        bono: columnasExtra.bono.map((c) => c.label),
+        fondo_distributivo: columnasExtra.fondo_distributivo.map((c) => c.label),
+      },
       fondos_distributivos_propuesto: fondosDistributivosPropuesto,
       comentarios,
     };
@@ -1744,6 +1813,61 @@ export default function App() {
   // lugares donde está el cargador (Biblioteca de fondos y Portafolio
   // propuesto), agrupada por tipo igual que la tabla de Portafolio
   // propuesto, para que sea consistente visualmente.
+  function renderDonutBloque(cual, titulo) {
+    const obj = cual === "1" ? donut1ActualObj() : donut2ActualObj();
+    const fijado = cual === "1" ? donut1Fijado : donut2Fijado;
+    const abierto = donutAbierto === cual;
+    const items = Object.keys(obj).map((label, idx) => ({ label, value: obj[label], color: PALETA_DONUT[idx % PALETA_DONUT.length] }));
+    const totalDraft = donutDraft.reduce((s, it) => s + (Number(it.pct) || 0), 0);
+
+    return (
+      <div style={{ flex: 1, minWidth: 280, maxWidth: 360 }}>
+        <div onClick={() => !abierto && abrirEdicionDonut(cual)} style={{ textAlign: "center", cursor: abierto ? "default" : "pointer" }}>
+          <DonutChart segments={items} />
+          <div style={{ fontSize: 12, fontWeight: 700, color: NAVY, marginTop: 8 }}>{titulo}</div>
+          <div style={{ fontSize: 10.5, color: "#9A998F" }}>{fijado ? "Fijada a mano" : "Automática"}{!abierto && " — click para editar"}</div>
+        </div>
+
+        {!abierto ? (
+          <div style={{ marginTop: 10 }}>
+            {items.map((it) => (
+              <div key={it.label} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <div style={{ width: 9, height: 9, borderRadius: "50%", background: it.color, flexShrink: 0 }} />
+                <div style={{ fontSize: 11.5, flex: 1 }}>{it.label}</div>
+                <div style={{ fontSize: 11.5, fontWeight: 600 }}>{(it.value * 100).toFixed(1)}%</div>
+              </div>
+            ))}
+            {fijado && (
+              <button onClick={() => volverAutomaticoDonut(cual)} style={{ marginTop: 6, border: "none", background: "none", color: TEAL, fontSize: 11, cursor: "pointer", textDecoration: "underline" }}>
+                Volver a automático
+              </button>
+            )}
+          </div>
+        ) : (
+          <div style={{ marginTop: 10, background: "#fbf9f5", border: "1px solid #eae7dc", borderRadius: 8, padding: 12 }}>
+            {donutDraft.map((it) => (
+              <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                <input style={{ ...miniInputStyle, padding: "5px 7px", flex: 1, fontSize: 11.5 }} value={it.label} onChange={(e) => actualizarCategoriaDonut(it.id, "label", e.target.value)} />
+                <input type="number" style={{ ...miniInputStyle, padding: "5px 7px", width: 65, fontSize: 11.5 }} value={it.pct} onChange={(e) => actualizarCategoriaDonut(it.id, "pct", e.target.value)} />
+                <button onClick={() => quitarCategoriaDonut(it.id)} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 13, cursor: "pointer" }}>✕</button>
+              </div>
+            ))}
+            <button onClick={agregarCategoriaDonut} style={{ marginBottom: 10, padding: "5px 10px", borderRadius: 6, border: "1px dashed #C9C4B6", background: "none", color: TEAL, fontSize: 11, cursor: "pointer" }}>
+              + Agregar categoría
+            </button>
+            <div style={{ fontSize: 11, marginBottom: 8, color: Math.abs(totalDraft - 100) < 0.5 ? "#3a7d44" : "#b23b3b" }}>
+              Total: {totalDraft.toFixed(1)}% {Math.abs(totalDraft - 100) < 0.5 ? "✓" : "— debería sumar 100%"}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={guardarDonut} style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 11.5, cursor: "pointer" }}>Guardar</button>
+              <button onClick={cerrarEdicionDonut} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #DEDAD0", background: "#fff", fontSize: 11.5, cursor: "pointer" }}>Cancelar</button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   function renderBaseImportPreview() {
     if (baseImportPreview.length === 0) return null;
     return (
@@ -2499,9 +2623,12 @@ export default function App() {
 
               {TIPO_ORDEN.filter((tipo) => proposedAssets.some((a) => (a.tipo_instrumento || "fondo") === tipo)).map((tipo) => {
                 const filas = proposedAssets.map((a, i) => ({ a, i })).filter(({ a }) => (a.tipo_instrumento || "fondo") === tipo);
+                const extraDeTipo = columnasExtra[tipo === "accion" ? "fondo" : tipo];
                 const colsOrdenadas = [
                   ...COLUMNAS_POR_TIPO[tipo].filter((c) => c.fijo),
-                  ...columnasConfig[tipo].map((key) => COLUMNAS_POR_TIPO[tipo].find((c) => c.key === key)).filter(Boolean),
+                  ...columnasConfig[tipo]
+                    .map((key) => COLUMNAS_POR_TIPO[tipo].find((c) => c.key === key) || extraDeTipo.find((c) => c.key === key))
+                    .filter(Boolean),
                 ];
                 return (
                   <div key={tipo} style={{ marginBottom: 26 }}>
@@ -2513,7 +2640,7 @@ export default function App() {
                     </div>
 
                     {columnasAbiertoPara === tipo && (
-                      <div style={{ background: "#fff", border: "1px solid #eae7dc", borderRadius: 6, padding: 10, marginBottom: 10, maxWidth: 320 }}>
+                      <div style={{ background: "#fff", border: "1px solid #eae7dc", borderRadius: 6, padding: 10, marginBottom: 10, maxWidth: 340 }}>
                         <div style={{ fontSize: 11, fontWeight: 600, color: NAVY, marginBottom: 6 }}>Tildar para mostrar — flechas para ordenar</div>
                         {COLUMNAS_POR_TIPO[tipo].filter((c) => !c.fijo).map((c) => {
                           const idx = columnasConfig[tipo].indexOf(c.key);
@@ -2531,6 +2658,40 @@ export default function App() {
                             </div>
                           );
                         })}
+
+                        {extraDeTipo.length > 0 && (
+                          <>
+                            <div style={{ fontSize: 10.5, fontWeight: 600, color: "#9A998F", marginTop: 8, marginBottom: 4, textTransform: "uppercase" }}>Agregadas a mano</div>
+                            {extraDeTipo.map((c) => {
+                              const idx = columnasConfig[tipo].indexOf(c.key);
+                              const visible = idx !== -1;
+                              return (
+                                <div key={c.key} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 0" }}>
+                                  <input type="checkbox" checked={visible} onChange={() => toggleColumnaVisible(tipo, c.key)} />
+                                  <span style={{ fontSize: 12, flex: 1 }}>{c.label}</span>
+                                  {visible && (
+                                    <>
+                                      <button onClick={() => moverColumna(tipo, c.key, -1)} disabled={idx === 0} style={{ border: "none", background: "none", cursor: idx === 0 ? "default" : "pointer", color: idx === 0 ? "#ccc" : "#78776f", fontSize: 12, padding: "0 3px" }}>▲</button>
+                                      <button onClick={() => moverColumna(tipo, c.key, 1)} disabled={idx === columnasConfig[tipo].length - 1} style={{ border: "none", background: "none", cursor: idx === columnasConfig[tipo].length - 1 ? "default" : "pointer", color: idx === columnasConfig[tipo].length - 1 ? "#ccc" : "#78776f", fontSize: 12, padding: "0 3px" }}>▼</button>
+                                    </>
+                                  )}
+                                  <button onClick={() => quitarColumnaExtra(tipo, c.key)} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer", padding: "0 3px" }}>✕</button>
+                                </div>
+                              );
+                            })}
+                          </>
+                        )}
+
+                        <div style={{ display: "flex", gap: 6, marginTop: 10, paddingTop: 8, borderTop: "1px solid #f2f0e9" }}>
+                          <input
+                            style={{ ...miniInputStyle, padding: "5px 8px", flex: 1 }}
+                            placeholder="Nombre de columna nueva"
+                            value={nuevaColumnaNombre}
+                            onChange={(e) => setNuevaColumnaNombre(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter") agregarColumnaExtra(tipo); }}
+                          />
+                          <button onClick={() => agregarColumnaExtra(tipo)} style={{ padding: "5px 10px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 11.5, cursor: "pointer", whiteSpace: "nowrap" }}>+ Agregar</button>
+                        </div>
                       </div>
                     )}
 
@@ -2563,7 +2724,14 @@ export default function App() {
                               </td>
                               {colsOrdenadas.map((c) => (
                                 <td key={c.key} style={{ padding: "4px 8px" }}>
-                                  {c.fijo ? (
+                                  {c.esExtra ? (
+                                    <input
+                                      type="text"
+                                      style={{ ...miniInputStyle, padding: "4px 6px", width: 100, fontSize: 11.5 }}
+                                      value={(a.extra && a.extra[c.label]) || ""}
+                                      onChange={(e) => actualizarProposedExtra(i, c.label, e.target.value)}
+                                    />
+                                  ) : c.fijo ? (
                                     <span>{a[c.key]}</span>
                                   ) : c.calculado ? (
                                     <span style={{ color: "#78776f" }}>
@@ -2599,54 +2767,12 @@ export default function App() {
               })}
 
               {(() => {
-                const d1 = donut1Actual();
-                const d2 = donut2DesdeDonut1(d1);
-                const colores1 = { "Fondos Renta Fija": NAVY, "Fondos Renta Variable": "#8B8A80", "Fondos Multi Asset": "#C9C4B6", "Cash": LIGHTBLUE, "Fondos Alternativos Liquidos": TEAL };
-                const colores2 = { "Fondos Renta Fija + Cash": TEAL, "Fondos Renta Variable": NAVY };
-                const totalManual = Object.values(donutValoresManual).reduce((s, v) => s + (Number(v) || 0), 0);
                 return (
                   <div style={{ marginTop: 26, borderTop: "1px solid #f2f0e9", paddingTop: 20 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                      <div style={{ fontSize: 13.5, fontWeight: 700, color: NAVY }}>Asset Allocation</div>
-                      {donutManual ? (
-                        <button onClick={() => setDonutManual(false)} style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>Volver a automático</button>
-                      ) : (
-                        <button onClick={activarEdicionDonut} style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>Editar % a mano</button>
-                      )}
-                    </div>
-
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: NAVY, marginBottom: 14 }}>Asset Allocation</div>
                     <div style={{ display: "flex", gap: 40, flexWrap: "wrap", alignItems: "flex-start" }}>
-                      <div style={{ textAlign: "center" }}>
-                        <DonutChart segments={Object.keys(d1).map((k) => ({ label: k, value: d1[k], color: colores1[k] }))} />
-                        <div style={{ fontSize: 11, color: "#78776f", marginTop: 6 }}>Por categoría</div>
-                      </div>
-                      <div style={{ textAlign: "center" }}>
-                        <DonutChart segments={Object.keys(d2).map((k) => ({ label: k, value: d2[k], color: colores2[k] }))} />
-                        <div style={{ fontSize: 11, color: "#78776f", marginTop: 6 }}>Renta Fija + Cash vs. Renta Variable</div>
-                      </div>
-
-                      <div style={{ flex: 1, minWidth: 240 }}>
-                        {Object.keys(donutValoresManual).map((k) => (
-                          <div key={k} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                            <div style={{ width: 10, height: 10, borderRadius: "50%", background: colores1[k], flexShrink: 0 }} />
-                            <div style={{ fontSize: 12, flex: 1 }}>{k.replace("Fondos ", "")}</div>
-                            {donutManual ? (
-                              <input
-                                type="number" style={{ ...miniInputStyle, width: 70, padding: "5px 8px" }}
-                                value={donutValoresManual[k]}
-                                onChange={(e) => setDonutValoresManual((prev) => ({ ...prev, [k]: e.target.value }))}
-                              />
-                            ) : (
-                              <div style={{ fontSize: 12, fontWeight: 600, width: 70, textAlign: "right" }}>{(d1[k] * 100).toFixed(1)}%</div>
-                            )}
-                          </div>
-                        ))}
-                        {donutManual && (
-                          <div style={{ fontSize: 11.5, marginTop: 6, color: Math.abs(totalManual - 100) < 0.5 ? "#3a7d44" : "#b23b3b" }}>
-                            Total: {totalManual.toFixed(1)}% {Math.abs(totalManual - 100) < 0.5 ? "✓" : "— debería sumar 100%"}
-                          </div>
-                        )}
-                      </div>
+                      {renderDonutBloque("1", "Por categoría")}
+                      {renderDonutBloque("2", "Renta Fija + Cash vs. Renta Variable")}
                     </div>
                   </div>
                 );
