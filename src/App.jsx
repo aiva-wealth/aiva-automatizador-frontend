@@ -287,6 +287,17 @@ export default function App() {
   const [descResultados, setDescResultados] = useState([]);
   const [descCategoriaDestino, setDescCategoriaDestino] = useState("Renta Fija & Multi Activo");
 
+  // --- Edición inline de un fondo desde el buscador de Descripción de
+  // activos — click en un resultado abre acá mismo la descripción/logo/
+  // factsheet editables, sin ir a Biblioteca de fondos.
+  const [descEditandoIsin, setDescEditandoIsin] = useState(null);
+  const [descEditDraft, setDescEditDraft] = useState(null); // {isin, nombre, descripcion, logo_url, factsheet_url}
+  const [descEditLogoFile, setDescEditLogoFile] = useState(null);
+  const [descEditGuardando, setDescEditGuardando] = useState(false);
+  const [descEditMensaje, setDescEditMensaje] = useState("");
+  const [descMarcaQuery, setDescMarcaQuery] = useState("");
+  const [descMarcaResultados, setDescMarcaResultados] = useState([]);
+
   const [evolucionFileName, setEvolucionFileName] = useState("");
   const [evolucionImageBase64, setEvolucionImageBase64] = useState(null);
   const [evolucionInputKey, setEvolucionInputKey] = useState(0);
@@ -1288,6 +1299,79 @@ export default function App() {
     });
     setDescQuery("");
     setDescResultados([]);
+  }
+
+  // --- Edición inline al buscar un fondo en Descripción de activos ---
+  function abrirEdicionDesc(f) {
+    setDescEditandoIsin((prev) => (prev === f.isin ? null : f.isin));
+    setDescEditDraft({ isin: f.isin, nombre: f.nombre, descripcion: f.descripcion || "", logo_url: f.logo_url || "", factsheet_url: f.factsheet_url || "" });
+    setDescEditLogoFile(null);
+    setDescMarcaQuery("");
+    setDescMarcaResultados([]);
+    setDescEditMensaje("");
+  }
+
+  useEffect(() => {
+    if (descMarcaQuery.trim().length < 2) { setDescMarcaResultados([]); return; }
+    const t = setTimeout(async () => {
+      const { data } = await supabase.from("marcas_logo").select("id, nombre, logo_url").ilike("nombre", `%${descMarcaQuery}%`).limit(10);
+      setDescMarcaResultados(data || []);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [descMarcaQuery]);
+
+  // Guarda descripción/logo/factsheet PARA SIEMPRE en la biblioteca (tabla
+  // fondos) y de paso lo agrega/actualiza en la categoría elegida de esta
+  // propuesta. Si el fondo ya tenía una descripción distinta cargada,
+  // confirma antes de pisarla.
+  async function guardarYAgregarDesc() {
+    if (!descEditDraft) return;
+    setDescEditGuardando(true);
+    setDescEditMensaje("");
+    try {
+      const { data: actual } = await supabase.from("fondos").select("descripcion").eq("isin", descEditDraft.isin).maybeSingle();
+      const descripcionAnterior = (actual?.descripcion || "").trim();
+      const descripcionNueva = (descEditDraft.descripcion || "").trim();
+      if (descripcionAnterior && descripcionAnterior !== descripcionNueva) {
+        const confirmar = window.confirm(
+          `Este fondo ya tiene una descripción distinta cargada en la biblioteca:\n\n"${descripcionAnterior}"\n\n¿Confirmás que la querés reemplazar para siempre por la nueva?`
+        );
+        if (!confirmar) { setDescEditGuardando(false); return; }
+      }
+
+      let logo_url = descEditDraft.logo_url;
+      if (descEditLogoFile) {
+        const ext = descEditLogoFile.name.split(".").pop();
+        const path = `${descEditDraft.isin}.${ext}`;
+        const { error: uploadError } = await supabase.storage.from("logos-fondos").upload(path, descEditLogoFile, { upsert: true });
+        if (uploadError) throw uploadError;
+        const { data } = supabase.storage.from("logos-fondos").getPublicUrl(path);
+        logo_url = data.publicUrl;
+      }
+
+      const { error } = await supabase.from("fondos").update({
+        descripcion: descripcionNueva || null,
+        factsheet_url: descEditDraft.factsheet_url || null,
+        logo_url,
+      }).eq("isin", descEditDraft.isin);
+      if (error) throw error;
+
+      const fondoFinal = { isin: descEditDraft.isin, nombre: descEditDraft.nombre, descripcion: descripcionNueva, factsheet_url: descEditDraft.factsheet_url, logo_url };
+      setDescSeleccion((prev) => {
+        const lista = prev[descCategoriaDestino];
+        const yaEsta = lista.some((x) => x.isin === fondoFinal.isin);
+        return { ...prev, [descCategoriaDestino]: yaEsta ? lista.map((x) => x.isin === fondoFinal.isin ? fondoFinal : x) : [...lista, fondoFinal] };
+      });
+
+      setDescEditMensaje("✓ Guardado en la biblioteca y agregado a esta propuesta.");
+      setDescEditandoIsin(null);
+      setDescQuery("");
+      setDescResultados([]);
+    } catch (e) {
+      setDescEditMensaje("Error al guardar: " + (e.message || e));
+    } finally {
+      setDescEditGuardando(false);
+    }
   }
 
   function quitarDescManual(categoria, isin) {
@@ -2472,13 +2556,69 @@ export default function App() {
                 </div>
               </Field>
               {descResultados.length > 0 && (
-                <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginBottom: 18, maxHeight: 180, overflowY: "auto" }}>
-                  {descResultados.map((f) => (
-                    <div key={f.isin} onClick={() => addDescManual(f)} style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #f2f0e9", display: "flex", alignItems: "center", gap: 8 }}>
-                      {f.logo_url && <img src={f.logo_url} alt="" style={{ height: 18 }} />}
-                      <b>{f.isin}</b> — {f.nombre} {!f.descripcion && <span style={{ color: "#b23b3b" }}>(sin descripción todavía)</span>}
-                    </div>
-                  ))}
+                <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginBottom: 18, maxHeight: 480, overflowY: "auto" }}>
+                  {descResultados.map((f) => {
+                    const abierto = descEditandoIsin === f.isin;
+                    return (
+                      <div key={f.isin} style={{ borderBottom: "1px solid #f2f0e9" }}>
+                        <div onClick={() => abrirEdicionDesc(f)} style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, background: abierto ? "#fbf6ee" : "transparent" }}>
+                          {f.logo_url && <img src={f.logo_url} alt="" style={{ height: 18 }} />}
+                          <b>{f.isin}</b> — {f.nombre} {!f.descripcion && <span style={{ color: "#b23b3b" }}>(sin descripción todavía)</span>}
+                        </div>
+
+                        {abierto && descEditDraft && (
+                          <div style={{ padding: 14, background: "#fff", borderTop: "1px solid #f2f0e9" }}>
+                            <Field label="Descripción">
+                              <textarea
+                                value={descEditDraft.descripcion}
+                                onChange={(e) => setDescEditDraft((prev) => ({ ...prev, descripcion: e.target.value }))}
+                                rows={4}
+                                style={{ ...inputStyle, resize: "vertical" }}
+                              />
+                            </Field>
+
+                            {descEditDraft.logo_url && (
+                              <img src={descEditDraft.logo_url} alt="logo" style={{ maxHeight: 50, marginBottom: 10, display: "block" }} />
+                            )}
+                            <Field label="Buscar logo por marca (reutiliza uno ya cargado)">
+                              <input style={inputStyle} value={descMarcaQuery} onChange={(e) => setDescMarcaQuery(e.target.value)} placeholder="Ej: MFS, BlackRock, Vontobel" />
+                            </Field>
+                            {descMarcaResultados.length > 0 && (
+                              <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginTop: -8, marginBottom: 12, maxHeight: 140, overflowY: "auto" }}>
+                                {descMarcaResultados.map((m) => (
+                                  <div
+                                    key={m.id}
+                                    onClick={() => { setDescEditDraft((prev) => ({ ...prev, logo_url: m.logo_url })); setDescEditLogoFile(null); setDescMarcaQuery(""); setDescMarcaResultados([]); }}
+                                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #f2f0e9" }}
+                                  >
+                                    <img src={m.logo_url} alt="" style={{ height: 18, maxWidth: 60, objectFit: "contain" }} />
+                                    {m.nombre}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <Field label="O subir un logo nuevo">
+                              <FileInputButton accept="image/*" onChange={(e) => setDescEditLogoFile(e.target.files[0])} label="Elegir imagen" />
+                            </Field>
+
+                            <Field label="Link al factsheet">
+                              <input
+                                style={inputStyle}
+                                value={descEditDraft.factsheet_url}
+                                onChange={(e) => setDescEditDraft((prev) => ({ ...prev, factsheet_url: e.target.value }))}
+                                placeholder="https://..."
+                              />
+                            </Field>
+
+                            <button onClick={guardarYAgregarDesc} disabled={descEditGuardando} style={{ padding: "9px 18px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontWeight: 600, cursor: "pointer" }}>
+                              {descEditGuardando ? "Guardando…" : "Guardar"}
+                            </button>
+                            {descEditMensaje && <div style={{ marginTop: 8, fontSize: 12.5, color: descEditMensaje.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{descEditMensaje}</div>}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
 
