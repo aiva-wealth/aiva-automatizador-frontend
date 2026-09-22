@@ -329,6 +329,7 @@ export default function App() {
   // activos — click en un resultado abre acá mismo la descripción/logo/
   // factsheet editables, sin ir a Biblioteca de fondos.
   const [descEditandoIsin, setDescEditandoIsin] = useState(null);
+  const [descEditCategoria, setDescEditCategoria] = useState(null); // a qué categoría de descSeleccion pertenece lo que se está editando ahora
   const [descEditDraft, setDescEditDraft] = useState(null); // {isin, nombre, descripcion, logo_url, factsheet_url}
   const [descEditLogoFile, setDescEditLogoFile] = useState(null);
   const [descEditGuardando, setDescEditGuardando] = useState(false);
@@ -1340,8 +1341,10 @@ export default function App() {
   }
 
   // --- Edición inline al buscar un fondo en Descripción de activos ---
-  function abrirEdicionDesc(f) {
-    setDescEditandoIsin((prev) => (prev === f.isin ? null : f.isin));
+  function abrirEdicionDesc(f, catDestino) {
+    const key = `${catDestino || descCategoriaDestino}::${f.isin}`;
+    setDescEditandoIsin((prev) => (prev === key ? null : key));
+    setDescEditCategoria(catDestino || descCategoriaDestino);
     setDescEditDraft({ isin: f.isin, nombre: f.nombre, descripcion: f.descripcion || "", logo_url: f.logo_url || "", factsheet_url: f.factsheet_url || "" });
     setDescEditLogoFile(null);
     setDescMarcaQuery("");
@@ -1395,10 +1398,11 @@ export default function App() {
       if (error) throw error;
 
       const fondoFinal = { isin: descEditDraft.isin, nombre: descEditDraft.nombre, descripcion: descripcionNueva, factsheet_url: descEditDraft.factsheet_url, logo_url };
+      const catDestino = descEditCategoria || descCategoriaDestino;
       setDescSeleccion((prev) => {
-        const lista = prev[descCategoriaDestino];
+        const lista = prev[catDestino];
         const yaEsta = lista.some((x) => x.isin === fondoFinal.isin);
-        return { ...prev, [descCategoriaDestino]: yaEsta ? lista.map((x) => x.isin === fondoFinal.isin ? fondoFinal : x) : [...lista, fondoFinal] };
+        return { ...prev, [catDestino]: yaEsta ? lista.map((x) => x.isin === fondoFinal.isin ? fondoFinal : x) : [...lista, fondoFinal] };
       });
 
       setDescEditMensaje("✓ Guardado en la biblioteca y agregado a esta propuesta.");
@@ -1419,19 +1423,39 @@ export default function App() {
   // Toma lo que ya está cargado en Portafolio propuesto y lo vuelca en las
   // 3 categorías de descripción — punto de partida rápido, después se
   // puede seguir ajustando a mano.
-  // Solo trae del Portafolio propuesto los que YA tienen descripción, foto
-  // y factsheet completos en la biblioteca — si a alguno le falta uno de
-  // los tres, se lo salta en vez de meterlo con huecos en blanco (para eso
-  // sigue estando la carga manual, que sí avisa qué le falta).
-  function prellenarDescDesdePortafolio() {
+  // Busca cada ISIN de Portafolio propuesto FRESCO contra la biblioteca
+  // (no usa lo que ya tenía pegado el instrumento en memoria — los
+  // cargados por Excel nunca traen descripción/logo/factsheet ahí, esa
+  // info vive solo en Supabase). Si el ISIN existe en la biblioteca, se
+  // trae igual aunque le falte descripción/logo/factsheet — el usuario
+  // completa lo que falte ahí mismo, con el buscador de abajo.
+  async function prellenarDescDesdePortafolio() {
+    const isins = [...new Set(proposedAssets.map((a) => a.isin).filter(Boolean))];
+    if (isins.length === 0) { setDescSeleccion({ "Renta Fija & Multi Activo": [], "Renta Variable": [], "Alternativos Líquidos": [] }); return; }
+
+    const { data, error } = await supabase
+      .from("fondos")
+      .select("isin, nombre, descripcion, factsheet_url, logo_url")
+      .in("isin", isins);
+    if (error) { alert("Error al buscar en la biblioteca: " + error.message); return; }
+
+    const porIsin = {};
+    (data || []).forEach((f) => { porIsin[f.isin] = f; });
+
     const grupos = { "Renta Fija & Multi Activo": [], "Renta Variable": [], "Alternativos Líquidos": [] };
     proposedAssets.forEach((a) => {
       const destino = (a.categoria === "Renta Fija" || a.categoria === "Multi Activo") ? "Renta Fija & Multi Activo"
         : a.categoria === "Renta Variable" ? "Renta Variable"
         : a.categoria === "Alternativos Líquidos" ? "Alternativos Líquidos" : null;
-      const completo = a.descripcion && a.logo_url && a.factsheet_url;
-      if (destino && a.isin && completo && !grupos[destino].some((f) => f.isin === a.isin)) {
-        grupos[destino].push({ isin: a.isin, nombre: a.nombre, descripcion: a.descripcion, factsheet_url: a.factsheet_url, logo_url: a.logo_url });
+      const enBiblioteca = a.isin && porIsin[a.isin];
+      if (destino && enBiblioteca && !grupos[destino].some((f) => f.isin === a.isin)) {
+        grupos[destino].push({
+          isin: a.isin,
+          nombre: enBiblioteca.nombre || a.nombre,
+          descripcion: enBiblioteca.descripcion || "",
+          factsheet_url: enBiblioteca.factsheet_url || "",
+          logo_url: enBiblioteca.logo_url || "",
+        });
       }
     });
     setDescSeleccion(grupos);
@@ -1864,6 +1888,59 @@ export default function App() {
             </div>
           </div>
         )}
+      </div>
+    );
+  }
+
+  function renderPanelEdicionDesc() {
+    return (
+      <div style={{ padding: 14, background: "#fff", borderTop: "1px solid #f2f0e9" }}>
+        <Field label="Descripción">
+          <textarea
+            value={descEditDraft.descripcion}
+            onChange={(e) => setDescEditDraft((prev) => ({ ...prev, descripcion: e.target.value }))}
+            rows={4}
+            style={{ ...inputStyle, resize: "vertical" }}
+          />
+        </Field>
+
+        {descEditDraft.logo_url && (
+          <img src={descEditDraft.logo_url} alt="logo" style={{ maxHeight: 50, marginBottom: 10, display: "block" }} />
+        )}
+        <Field label="Buscar logo por marca (reutiliza uno ya cargado)">
+          <input style={inputStyle} value={descMarcaQuery} onChange={(e) => setDescMarcaQuery(e.target.value)} placeholder="Ej: MFS, BlackRock, Vontobel" />
+        </Field>
+        {descMarcaResultados.length > 0 && (
+          <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginTop: -8, marginBottom: 12, maxHeight: 140, overflowY: "auto" }}>
+            {descMarcaResultados.map((m) => (
+              <div
+                key={m.id}
+                onClick={() => { setDescEditDraft((prev) => ({ ...prev, logo_url: m.logo_url })); setDescEditLogoFile(null); setDescMarcaQuery(""); setDescMarcaResultados([]); }}
+                style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #f2f0e9" }}
+              >
+                <img src={m.logo_url} alt="" style={{ height: 18, maxWidth: 60, objectFit: "contain" }} />
+                {m.nombre}
+              </div>
+            ))}
+          </div>
+        )}
+        <Field label="O subir un logo nuevo">
+          <FileInputButton accept="image/*" onChange={(e) => setDescEditLogoFile(e.target.files[0])} label="Elegir imagen" />
+        </Field>
+
+        <Field label="Link al factsheet">
+          <input
+            style={inputStyle}
+            value={descEditDraft.factsheet_url}
+            onChange={(e) => setDescEditDraft((prev) => ({ ...prev, factsheet_url: e.target.value }))}
+            placeholder="https://..."
+          />
+        </Field>
+
+        <button onClick={guardarYAgregarDesc} disabled={descEditGuardando} style={{ padding: "9px 18px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontWeight: 600, cursor: "pointer" }}>
+          {descEditGuardando ? "Guardando…" : "Guardar"}
+        </button>
+        {descEditMensaje && <div style={{ marginTop: 8, fontSize: 12.5, color: descEditMensaje.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{descEditMensaje}</div>}
       </div>
     );
   }
@@ -2796,64 +2873,14 @@ export default function App() {
               {descResultados.length > 0 && (
                 <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginBottom: 18, maxHeight: 480, overflowY: "auto" }}>
                   {descResultados.map((f) => {
-                    const abierto = descEditandoIsin === f.isin;
+                    const abierto = descEditandoIsin === `${descCategoriaDestino}::${f.isin}`;
                     return (
                       <div key={f.isin} style={{ borderBottom: "1px solid #f2f0e9" }}>
                         <div onClick={() => abrirEdicionDesc(f)} style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, background: abierto ? "#fbf6ee" : "transparent" }}>
                           {f.logo_url && <img src={f.logo_url} alt="" style={{ height: 18 }} />}
                           <b>{f.isin}</b> — {f.nombre} {!f.descripcion && <span style={{ color: "#b23b3b" }}>(sin descripción todavía)</span>}
                         </div>
-
-                        {abierto && descEditDraft && (
-                          <div style={{ padding: 14, background: "#fff", borderTop: "1px solid #f2f0e9" }}>
-                            <Field label="Descripción">
-                              <textarea
-                                value={descEditDraft.descripcion}
-                                onChange={(e) => setDescEditDraft((prev) => ({ ...prev, descripcion: e.target.value }))}
-                                rows={4}
-                                style={{ ...inputStyle, resize: "vertical" }}
-                              />
-                            </Field>
-
-                            {descEditDraft.logo_url && (
-                              <img src={descEditDraft.logo_url} alt="logo" style={{ maxHeight: 50, marginBottom: 10, display: "block" }} />
-                            )}
-                            <Field label="Buscar logo por marca (reutiliza uno ya cargado)">
-                              <input style={inputStyle} value={descMarcaQuery} onChange={(e) => setDescMarcaQuery(e.target.value)} placeholder="Ej: MFS, BlackRock, Vontobel" />
-                            </Field>
-                            {descMarcaResultados.length > 0 && (
-                              <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginTop: -8, marginBottom: 12, maxHeight: 140, overflowY: "auto" }}>
-                                {descMarcaResultados.map((m) => (
-                                  <div
-                                    key={m.id}
-                                    onClick={() => { setDescEditDraft((prev) => ({ ...prev, logo_url: m.logo_url })); setDescEditLogoFile(null); setDescMarcaQuery(""); setDescMarcaResultados([]); }}
-                                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #f2f0e9" }}
-                                  >
-                                    <img src={m.logo_url} alt="" style={{ height: 18, maxWidth: 60, objectFit: "contain" }} />
-                                    {m.nombre}
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                            <Field label="O subir un logo nuevo">
-                              <FileInputButton accept="image/*" onChange={(e) => setDescEditLogoFile(e.target.files[0])} label="Elegir imagen" />
-                            </Field>
-
-                            <Field label="Link al factsheet">
-                              <input
-                                style={inputStyle}
-                                value={descEditDraft.factsheet_url}
-                                onChange={(e) => setDescEditDraft((prev) => ({ ...prev, factsheet_url: e.target.value }))}
-                                placeholder="https://..."
-                              />
-                            </Field>
-
-                            <button onClick={guardarYAgregarDesc} disabled={descEditGuardando} style={{ padding: "9px 18px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontWeight: 600, cursor: "pointer" }}>
-                              {descEditGuardando ? "Guardando…" : "Guardar"}
-                            </button>
-                            {descEditMensaje && <div style={{ marginTop: 8, fontSize: 12.5, color: descEditMensaje.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{descEditMensaje}</div>}
-                          </div>
-                        )}
+                        {abierto && descEditDraft && renderPanelEdicionDesc()}
                       </div>
                     );
                   })}
@@ -2864,16 +2891,22 @@ export default function App() {
                 <div key={cat} style={{ marginBottom: 22 }}>
                   <div style={{ fontSize: 12.5, fontWeight: 700, color: NAVY, marginBottom: 8 }}>{cat} ({descSeleccion[cat].length})</div>
                   {descSeleccion[cat].length === 0 && <div style={{ fontSize: 12, color: "#a5a399", marginBottom: 8 }}>Sin fondos elegidos — esta página no va a aparecer en el documento.</div>}
-                  {descSeleccion[cat].map((f) => (
-                    <div key={f.isin} style={{ display: "flex", alignItems: "center", gap: 10, background: "#fff", border: "1px solid #eae7dc", borderRadius: 6, padding: "8px 10px", marginBottom: 6 }}>
-                      {f.logo_url ? <img src={f.logo_url} alt="" style={{ height: 24 }} /> : <div style={{ width: 24 }} />}
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 13 }}>{f.nombre}</div>
-                        <div style={{ fontSize: 11, color: f.descripcion ? "#78776f" : "#b23b3b" }}>{f.descripcion ? f.descripcion.slice(0, 90) + (f.descripcion.length > 90 ? "…" : "") : "Sin descripción cargada en la biblioteca todavía"}</div>
+                  {descSeleccion[cat].map((f) => {
+                    const abierto = descEditandoIsin === `${cat}::${f.isin}`;
+                    return (
+                      <div key={f.isin} style={{ background: "#fff", border: "1px solid #eae7dc", borderRadius: 6, marginBottom: 6, overflow: "hidden" }}>
+                        <div onClick={() => abrirEdicionDesc(f, cat)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", cursor: "pointer" }}>
+                          {f.logo_url ? <img src={f.logo_url} alt="" style={{ height: 24 }} /> : <div style={{ width: 24 }} />}
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 13 }}>{f.nombre}</div>
+                            <div style={{ fontSize: 11, color: f.descripcion ? "#78776f" : "#b23b3b" }}>{f.descripcion ? f.descripcion.slice(0, 90) + (f.descripcion.length > 90 ? "…" : "") : "Sin descripción cargada en la biblioteca todavía — click para completarla"}</div>
+                          </div>
+                          <button onClick={(e) => { e.stopPropagation(); quitarDescManual(cat, f.isin); }} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer" }}>Quitar</button>
+                        </div>
+                        {abierto && descEditDraft && renderPanelEdicionDesc()}
                       </div>
-                      <button onClick={() => quitarDescManual(cat, f.isin)} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer" }}>Quitar</button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ))}
             </Section>
