@@ -169,21 +169,39 @@ const secondaryButtonStyle = {
 // Botón de archivo con estilo propio — <input type="file"> nativo no se
 // puede restylear directo (cada navegador dibuja su propio botón), así que
 // se esconde y se dispara con un botón normal al lado del nombre elegido.
+// También funciona como dropzone: se puede arrastrar el archivo directo
+// sobre el botón/nombre, no hace falta abrir el diálogo si no se quiere.
 function FileInputButton({ accept, multiple, onChange, label }) {
   const inputRef = useRef(null);
   const [fileName, setFileName] = useState("");
+  const [arrastrando, setArrastrando] = useState(false);
+
+  function procesarArchivos(files) {
+    setFileName(!files || files.length === 0 ? "" : files.length === 1 ? files[0].name : `${files.length} archivos`);
+    onChange({ target: { files } });
+  }
+
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+    <div
+      onDragOver={(e) => { e.preventDefault(); setArrastrando(true); }}
+      onDragLeave={() => setArrastrando(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setArrastrando(false);
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) procesarArchivos(e.dataTransfer.files);
+      }}
+      style={{
+        display: "flex", alignItems: "center", gap: 10, padding: "5px 7px", margin: "-5px -7px",
+        borderRadius: 10, border: `1.5px dashed ${arrastrando ? TEAL : "transparent"}`,
+        background: arrastrando ? "#EAF0F6" : "transparent",
+      }}
+    >
       <input
         ref={inputRef}
         type="file"
         accept={accept}
         multiple={multiple}
-        onChange={(e) => {
-          const files = e.target.files;
-          setFileName(!files || files.length === 0 ? "" : files.length === 1 ? files[0].name : `${files.length} archivos`);
-          onChange(e);
-        }}
+        onChange={(e) => procesarArchivos(e.target.files)}
         style={{ display: "none" }}
       />
       <button
@@ -194,7 +212,7 @@ function FileInputButton({ accept, multiple, onChange, label }) {
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         {label || "Elegir archivo"}
       </button>
-      <span style={{ fontSize: 12.5, color: fileName ? NAVY : "#9A998F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{fileName || "Ningún archivo seleccionado"}</span>
+      <span style={{ fontSize: 12.5, color: fileName ? NAVY : "#9A998F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{arrastrando ? "Soltá para cargar…" : (fileName || "Ningún archivo seleccionado, o arrastralo acá")}</span>
     </div>
   );
 }
@@ -2324,9 +2342,15 @@ export default function App() {
               {(() => {
                 const sumaFondos = proposedAssets.reduce((s, a) => s + (Number(a.monto) || 0), 0);
                 const falta = montoInvertir - sumaFondos - (Number(cashManualPropuesta) || 0);
+                const faltaPct = montoInvertir ? (Math.abs(falta) / montoInvertir) * 100 : 0;
+                const faltaPctTxt = faltaPct.toLocaleString("es-UY", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
                 return (
                   <div style={{ fontSize: 12.5, marginBottom: 14, color: Math.abs(falta) < 1 ? "#3a7d44" : "#b23b3b" }}>
-                    {Math.abs(falta) < 1 ? "✓ Asignado el 100% del monto." : falta > 0 ? `Falta asignar ${falta.toLocaleString()} USD para llegar al monto total.` : `Te pasaste por ${Math.abs(falta).toLocaleString()} USD del monto total.`}
+                    {Math.abs(falta) < 1
+                      ? "✓ Asignado el 100% del monto."
+                      : falta > 0
+                      ? `Falta asignar ${falta.toLocaleString()} USD (${faltaPctTxt}%) para llegar al monto total.`
+                      : `Te pasaste por ${Math.abs(falta).toLocaleString()} USD (${faltaPctTxt}%) del monto total.`}
                   </div>
                 );
               })()}
