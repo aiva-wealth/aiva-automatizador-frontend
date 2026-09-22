@@ -2010,13 +2010,13 @@ export default function App() {
     <div style={{ fontFamily: "Montserrat, sans-serif", background: CREAM, minHeight: "100vh", display: "flex" }}>
       <div style={{ width: 234, flexShrink: 0, background: NAVY, display: "flex", flexDirection: "column", padding: "26px 16px", minHeight: "100vh", boxSizing: "border-box" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "0 8px 26px 8px" }}>
-          <svg width="78" height="22" viewBox="0 0 120 34" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <polygon points="5,30 15,4 25,30" fill="#D1DFEA" />
-            <rect x="30" y="4" width="4" height="26" fill="#D1DFEA" />
-            <polygon points="40,4 50,30 60,4" fill="#D1DFEA" />
-            <polygon points="65,30 75,4 85,30" fill="#D1DFEA" />
+          <svg width="90" height="16" viewBox="0 0 140 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <polygon points="4,22 19,2 34,22" fill="#D1DFEA" />
+            <rect x="38" y="2" width="5" height="20" fill="#D1DFEA" />
+            <polygon points="47,2 62,22 77,2" fill="#D1DFEA" />
+            <polygon points="83,22 98,2 113,22" fill="#D1DFEA" />
           </svg>
-          <div style={{ color: "#D1DFEA", fontWeight: 400, fontSize: 13 }}>Wealth</div>
+          <div style={{ color: "#D1DFEA", fontWeight: 400, fontSize: 13 }}>Asset</div>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
           {[
