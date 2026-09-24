@@ -287,6 +287,7 @@ export default function App() {
   const [proposedAssets, setProposedAssets] = useState([]);
   const [cashManualPropuesta, setCashManualPropuesta] = useState(0);
   const [cashActualPropuesta, setCashActualPropuesta] = useState(0);
+  const [portafolioActualImportMensaje, setPortafolioActualImportMensaje] = useState("");
   const [nuevoActivoNombre, setNuevoActivoNombre] = useState("");
   const [nuevoActivoIsin, setNuevoActivoIsin] = useState("");
   const [comentarios, setComentarios] = useState("");
@@ -1484,27 +1485,79 @@ export default function App() {
     setEvolucionInputKey((k) => k + 1);
   }
 
-  // Importa el excel "Open Tax Lots" de StoneX para el portafolio actual de
-  // una Propuesta nueva — nombre, ISIN, importe y costo (para poder
-  // calcular el rendimiento solo e imprimir la misma tabla que Revisión).
-  async function handleExcelImportPropuestaActual(file) {
+  // Portafolio actual (Propuesta): un solo cargador que detecta solo cuál
+  // de los 3 formatos es — no hace falta elegir a mano.
+  // - Utmost: siempre es PDF (los otros dos son Excel), se manda al
+  //   backend (pdfplumber lee mejor tablas de PDF que cualquier librería
+  //   de JS en el navegador).
+  // - StoneX vs ITA: ambos son Excel, se distinguen por sus columnas
+  //   (StoneX trae "Symbol/ID"/"Quantity"; ITA trae "Reference"/"Nominal").
+  async function handleImportPortafolioActual(file) {
     if (!file) return;
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type: "array" });
-    const sheetName = wb.SheetNames.includes("By Security") ? "By Security" : wb.SheetNames[0];
-    const ws = wb.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
-    const nuevos = rows
-      .map((r) => {
+    setPortafolioActualImportMensaje("");
+    try {
+      const esPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+
+      if (esPdf) {
+        const form = new FormData();
+        form.append("archivo", file);
+        const resp = await fetch(`${BACKEND_URL}/parse-utmost-pdf`, { method: "POST", body: form });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err.detail || "Error al leer el PDF");
+        }
+        const data = await resp.json();
+        setCurrentAssets((prev) => [...prev, ...data.activos]);
+        if (data.cash) setCashActualPropuesta((prev) => (Number(prev) || 0) + data.cash);
+        setPortafolioActualImportMensaje(`✓ Detectado: Utmost (PDF). ${data.activos.length} activo(s) importado(s)${data.cash ? ` + cash USD ${data.cash.toLocaleString()}` : ""}.`);
+        return;
+      }
+
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const primeraHoja = wb.Sheets[wb.SheetNames[0]];
+      const headers = (XLSX.utils.sheet_to_json(primeraHoja, { header: 1, defval: null })[0] || []).map((h) => String(h || "").trim());
+
+      if (headers.includes("Reference") && headers.includes("Nominal")) {
+        // ITA
+        const rows = XLSX.utils.sheet_to_json(primeraHoja, { defval: null });
+        const nuevos = rows.map((r) => {
+          const nominal = Number(r["Nominal"]) || 0;
+          const unitCost = Number(r["Unit Cost Price"]) || 0;
+          return {
+            isin: r["Reference"] || "",
+            nombre: r["Asset"] || "",
+            importe: Math.round(Number(r["Value In Asset Ccy"]) || 0),
+            costo: Math.round(unitCost * nominal),
+          };
+        }).filter((a) => a.nombre);
+        setCurrentAssets((prev) => [...prev, ...nuevos]);
+        setPortafolioActualImportMensaje(`✓ Detectado: ITA. ${nuevos.length} activo(s) importado(s). No incluye cash — agregalo a mano si corresponde.`);
+        return;
+      }
+
+      // StoneX (default)
+      const sheetName = wb.SheetNames.includes("By Security") ? "By Security" : wb.SheetNames[0];
+      const ws = wb.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
+      const nuevos = rows.map((r) => {
         const cantidad = Number(r["Quantity"]) || 0;
         const usdPrice = Number(r["USD Price"]) || 0;
         const unitCost = Number(r["Unit Cost"]) || 0;
         const importe = Math.round(Number(r["Mkt Value"]) || (usdPrice * cantidad) || 0);
         const costo = Math.round(Number(r["Adjusted Cost"]) || (unitCost * cantidad) || 0);
         return { nombre: r["Description"] || "", isin: r["Symbol/ID"] || "", importe, costo };
-      })
-      .filter((a) => a.nombre);
-    setCurrentAssets((prev) => [...prev, ...nuevos]);
+      }).filter((a) => a.nombre);
+
+      if (nuevos.length === 0) {
+        setPortafolioActualImportMensaje("No reconocí el formato del archivo (probé StoneX, ITA y Utmost). Revisá que sea uno de esos tres.");
+        return;
+      }
+      setCurrentAssets((prev) => [...prev, ...nuevos]);
+      setPortafolioActualImportMensaje(`✓ Detectado: StoneX. ${nuevos.length} activo(s) importado(s).`);
+    } catch (e) {
+      setPortafolioActualImportMensaje("Error al importar: " + (e.message || e));
+    }
   }
 
   // Importa el excel "Open Tax Lots" de StoneX (hoja "By Security") para el
@@ -1728,7 +1781,7 @@ export default function App() {
                 importe,
                 pct: total ? Math.round(importe / total * 100) : 0,
                 costo,
-                rendimiento: costo ? +(((importe - costo) / costo) * 100).toFixed(1) : 0,
+                rendimiento: a.rendimiento !== undefined ? +Number(a.rendimiento).toFixed(1) : (costo ? +(((importe - costo) / costo) * 100).toFixed(1) : 0),
               };
             });
             if (cashActualPropuesta) {
@@ -2600,11 +2653,12 @@ export default function App() {
 
           {stepName === "Portafolio actual" && tipo === "Propuesta" && (
             <Section title="Portafolio actual" subtitle="El % y el rendimiento se calculan solos — % sobre el total (activos + cash), rendimiento sobre costo vs. importe actual.">
-              <Field label="Cash (USD)" hint="StoneX no incluye el efectivo en el excel de posiciones — hay que cargarlo aparte.">
+              <Field label="Cash (USD)" hint="StoneX e ITA no incluyen el efectivo — hay que cargarlo aparte. Utmost sí lo trae solo (se suma automático al importar el PDF).">
                 <input type="number" style={{ ...inputStyle, maxWidth: 220 }} value={cashActualPropuesta} onChange={(e) => setCashActualPropuesta(+e.target.value)} />
               </Field>
-              <Field label="Importar desde Excel (Open Tax Lots de StoneX)" hint="Toma Description, Mkt Value y Adjusted Cost de la hoja 'By Security' y agrega una fila por activo.">
-                <FileInputButton accept=".xlsx,.xls" onChange={(e) => handleExcelImportPropuestaActual(e.target.files[0])} label="Elegir Excel" />
+              <Field label="Importar desde archivo — StoneX, ITA o Utmost (detecta solo cuál es)" hint="StoneX/ITA: Excel. Utmost: el PDF de 'Valuation Statement'. Se agrega una fila por activo; ITA y Utmost no traen cash, StoneX tampoco.">
+                <FileInputButton accept=".xlsx,.xls,.pdf" onChange={(e) => handleImportPortafolioActual(e.target.files[0])} label="Elegir archivo" />
+                {portafolioActualImportMensaje && <div style={{ marginTop: 8, fontSize: 11.5, color: portafolioActualImportMensaje.startsWith("Error") || portafolioActualImportMensaje.startsWith("No reconocí") ? "#b23b3b" : "#3a7d44" }}>{portafolioActualImportMensaje}</div>}
               </Field>
               <button onClick={() => setCurrentAssets((prev) => [...prev, { nombre: "", isin: "", importe: 0, costo: 0 }])} style={{ marginBottom: 12, padding: "6px 12px", borderRadius: 6, border: "1px dashed #b8b5a9", background: "none", cursor: "pointer", fontSize: 12.5 }}>+ Agregar activo a mano</button>
               {(() => {
