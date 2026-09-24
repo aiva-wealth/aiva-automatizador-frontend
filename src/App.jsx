@@ -351,6 +351,7 @@ export default function App() {
   const [registroCargando, setRegistroCargando] = useState(false);
   const [registroSeleccionados, setRegistroSeleccionados] = useState({}); // id -> true
   const [registroBusqueda, setRegistroBusqueda] = useState("");
+  const [editandoPropuestaId, setEditandoPropuestaId] = useState(null); // si no es null, "Generar" actualiza esta fila en vez de crear una nueva
 
   const [bibliotecaQuery, setBibliotecaQuery] = useState("");
   const [bibliotecaResultados, setBibliotecaResultados] = useState([]);
@@ -439,6 +440,102 @@ export default function App() {
       .limit(100);
     setRegistro(data || []);
     setRegistroCargando(false);
+  }
+
+  // Vuelve a abrir una propuesta ya generada para editarla — reconstruye
+  // todo el estado del formulario a partir del `config` que se guardó en
+  // su momento (la propuesta ya trae todo lo que hace falta, no depende
+  // de nada que se haya cargado en esta sesión). Al generar de nuevo,
+  // actualiza esa misma fila en vez de crear una nueva (ver
+  // editandoPropuestaId en handleGenerar).
+  //
+  // OJO — una limitación real: "categorias_propuesto" guarda fondos y
+  // acciones ya mezclados en la misma lista, sin distinguir cuál era cuál
+  // (en el PPT final se ven igual). Al reabrir, todos vuelven a aparecer
+  // como "Fondos" — si alguno era una Acción, hay que volver a marcarlo
+  // así a mano si querés que la tabla en pantalla lo distinga.
+  async function abrirParaEditar(row) {
+    const { data, error } = await supabase.from("propuestas").select("config").eq("id", row.id).single();
+    if (error || !data) { alert("Error al cargar la propuesta: " + (error?.message || "no se encontró")); return; }
+    const config = data.config || {};
+
+    setEditandoPropuestaId(row.id);
+    setTipo(row.tipo);
+    setCliente(config.cliente || row.cliente || "");
+    setNroCuenta(config.nro_cuenta || row.nro_cuenta || "");
+    setIncluirPagina2(!!config.incluir_pagina2);
+    setIncluirValueProp(config.incluir_valor !== false);
+    setPerfil(config.perfil_riesgo || "Balanceado");
+    setComentarios(config.comentarios || "");
+    setMontoInvertir(config.monto_total || 0);
+
+    if (Array.isArray(config.equipo) && config.equipo.length > 0) {
+      setTeam(config.equipo.map((m, i) => ({
+        id: `edit_${Date.now()}_${i}`, nombre: m.nombre || "", puesto: m.puesto || "",
+        educacion: m.educacion || "", incluido: true, foto_base64: m.foto_base64,
+      })));
+    }
+
+    const CATEGORIA_LABEL_A_VALOR = {
+      "Fondos Renta Fija": "Renta Fija", "Fondo Multi Activo": "Multi Activo",
+      "Fondo Renta Variable": "Renta Variable", "Fondos Alternativos Líquidos": "Alternativos Líquidos",
+    };
+
+    if (row.tipo === "Propuesta") {
+      const filasPA = (config.portafolio_actual || []).filter((f) => f.nombre !== "Cash");
+      setCurrentAssets(filasPA.map((f) => ({ nombre: f.nombre, isin: f.isin || "", importe: f.importe || 0, costo: f.costo || 0, rendimiento: f.rendimiento })));
+      const cashRow = (config.portafolio_actual || []).find((f) => f.nombre === "Cash");
+      setCashActualPropuesta(cashRow ? cashRow.importe : 0);
+
+      const nuevosProposed = [];
+      (config.categorias_propuesto || []).forEach((cat) => {
+        const categoria = CATEGORIA_LABEL_A_VALOR[cat.label] || "Renta Variable";
+        (cat.fondos || []).forEach((f) => {
+          nuevosProposed.push({ ...f, categoria, tipo_instrumento: "fondo", ytd: f.ytd || 0, y1: f.y1 || 0, y3: f.y3 || 0, y5: f.y5 || 0 });
+        });
+      });
+      (config.bonos_propuesto || []).forEach((b) => {
+        nuevosProposed.push({ ...b, categoria: "Renta Fija", tipo_instrumento: "bono" });
+      });
+      (config.fondos_distributivos_propuesto || []).forEach((f) => {
+        nuevosProposed.push({ ...f, categoria: "Renta Fija", tipo_instrumento: "fondo_distributivo" });
+      });
+      setProposedAssets(nuevosProposed);
+      setCashManualPropuesta(config.cash_monto || 0);
+
+      const nuevoColumnasConfig = {};
+      Object.keys(COLUMNAS_POR_TIPO).forEach((t) => { nuevoColumnasConfig[t] = COLUMNAS_POR_TIPO[t].filter((c) => !c.fijo).map((c) => c.key); });
+      const nuevasColumnasExtra = { fondo: [], bono: [], fondo_distributivo: [] };
+      Object.entries(config.columnas_extra || {}).forEach(([tipoExtra, labels]) => {
+        (labels || []).forEach((label) => {
+          const key = `extra_${tipoExtra}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          nuevasColumnasExtra[tipoExtra].push({ key, label, esExtra: true });
+          nuevoColumnasConfig[tipoExtra] = [...(nuevoColumnasConfig[tipoExtra] || []), key];
+          if (tipoExtra === "fondo") nuevoColumnasConfig.accion = [...(nuevoColumnasConfig.accion || []), key];
+        });
+      });
+      setColumnasExtra(nuevasColumnasExtra);
+      setColumnasConfig(nuevoColumnasConfig);
+
+      // Las dos tortas quedan fijadas con los valores exactos que tenía
+      // esta propuesta (no recalculadas de nuevo) — "Volver a automático"
+      // sigue disponible si preferís que se recalculen desde cero.
+      if (config.asset_allocation_donut1) {
+        setDonut1Fijado(Object.entries(config.asset_allocation_donut1).map(([label, frac]) => ({ id: label, label, pct: Math.round(frac * 1000) / 10 })));
+      }
+      if (config.asset_allocation_donut2) {
+        setDonut2Fijado(Object.entries(config.asset_allocation_donut2).map(([label, frac]) => ({ id: label, label, pct: Math.round(frac * 1000) / 10 })));
+      }
+
+      setDescSeleccion(config.fondos_por_categoria || { "Renta Fija & Multi Activo": [], "Renta Variable": [], "Alternativos Líquidos": [] });
+    } else {
+      // Revisión: reconstrucción básica del portafolio actual.
+      setCurrentAssets((config.portafolio_actual || []).map((f) => ({ isin: f.isin, nombre: f.nombre, pct: f.pct, costo: f.costo, valor_actual: f.valor_actual, rendimiento: f.rendimiento })));
+      setCashValorRevision(config.cash_valor || 0);
+    }
+
+    setVista("nueva");
+    setStep(0);
   }
 
   async function cambiarStatus(id, nuevoStatus) {
@@ -1844,7 +1941,7 @@ export default function App() {
       const res = await fetch(`${BACKEND_URL}/generar`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tipo, creado_por: usuario, repcode: repcode || "sin-rep", cliente, config }),
+        body: JSON.stringify({ tipo, creado_por: usuario, repcode: repcode || "sin-rep", cliente, config, propuesta_id: editandoPropuestaId || undefined }),
       });
       if (!res.ok) throw new Error(`El backend respondió ${res.status}`);
       const data = await res.json();
@@ -2398,7 +2495,8 @@ export default function App() {
                       {r.archivo_pptx_url && <a href={r.archivo_pptx_url} target="_blank" rel="noreferrer" style={{ color: NAVY, marginRight: 10 }}>PPTX</a>}
                       {r.archivo_pdf_url && <a href={r.archivo_pdf_url} target="_blank" rel="noreferrer" style={{ color: NAVY }}>PDF</a>}
                     </td>
-                    <td style={{ padding: "8px 10px" }}>
+                    <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>
+                      <button onClick={() => abrirParaEditar(r)} style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", marginRight: 10 }}>Editar</button>
                       <button onClick={() => eliminarPropuesta(r.id)} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer" }}>Eliminar</button>
                     </td>
                   </tr>
@@ -2409,6 +2507,12 @@ export default function App() {
         </div>
       ) : (
       <div style={{ padding: "28px 36px" }}>
+        {editandoPropuestaId && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#EAF0F6", border: "1px solid #C9DCEA", borderRadius: 10, padding: "10px 14px", marginBottom: 18 }}>
+            <span style={{ fontSize: 12.5, color: NAVY }}>✎ Editando una propuesta ya generada — al generar de nuevo, se actualiza esta misma (no crea una nueva).</span>
+            <button onClick={() => window.location.reload()} style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", textDecoration: "underline", marginLeft: "auto" }}>Cancelar y empezar de cero</button>
+          </div>
+        )}
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 24 }}>
           {currentSteps.map((s, i) => (
             <div key={s} onClick={() => setStep(i)} style={{
@@ -2983,7 +3087,7 @@ export default function App() {
               <button onClick={() => setStep((s) => s + 1)} style={{ ...primaryButtonStyle, background: NAVY, boxShadow: "0 4px 12px rgba(22,34,58,0.25)" }}>Siguiente →</button>
             ) : (
               <button onClick={handleGenerar} disabled={generando} style={primaryButtonStyle}>
-                {generando ? "Generando…" : "Generar PPT + PDF"}
+                {generando ? "Generando…" : editandoPropuestaId ? "Guardar cambios (actualiza esta propuesta)" : "Generar PPT + PDF"}
               </button>
             )}
           </div>
