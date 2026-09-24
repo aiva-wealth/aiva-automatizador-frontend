@@ -352,6 +352,7 @@ export default function App() {
   const [registroSeleccionados, setRegistroSeleccionados] = useState({}); // id -> true
   const [registroBusqueda, setRegistroBusqueda] = useState("");
   const [editandoPropuestaId, setEditandoPropuestaId] = useState(null); // si no es null, "Generar" actualiza esta fila en vez de crear una nueva
+  const [mostrarAgregarMarcas, setMostrarAgregarMarcas] = useState(false);
 
   const [bibliotecaQuery, setBibliotecaQuery] = useState("");
   const [bibliotecaResultados, setBibliotecaResultados] = useState([]);
@@ -2159,7 +2160,7 @@ export default function App() {
   return (
     <div style={{ fontFamily: "Montserrat, sans-serif", background: CREAM, minHeight: "100vh", display: "flex" }}>
       <div style={{ width: 234, flexShrink: 0, background: NAVY, display: "flex", flexDirection: "column", padding: "26px 16px", minHeight: "100vh", boxSizing: "border-box" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 5, padding: "0 8px 26px 8px" }}>
+        <div onClick={() => setVista("nueva")} style={{ display: "flex", flexDirection: "column", gap: 5, padding: "0 8px 26px 8px", cursor: "pointer" }} title="Ir al inicio">
           <svg width="82" height="21" viewBox="0 0 138 35" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M 4.00 34.64 Q 0.00 34.64 2.00 31.18 L 18.00 3.46 Q 20.00 0.00 22.00 3.46 L 38.00 31.18 Q 40.00 34.64 36.00 34.64 Z" fill="#D1DFEA" />
             <rect x="46" y="0" width="12" height="34.64" rx="4" fill="#D1DFEA" />
@@ -2262,46 +2263,54 @@ export default function App() {
               Cada marca acá se puede asociar a varios fondos sin duplicar el archivo. Agrupa además todos los fondos por su logo real — un grupo con varios fondos que no son de la misma familia suele ser un error de carga.
             </p>
 
-            <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 14, marginBottom: 22, maxWidth: 520 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 600, color: NAVY, marginBottom: 8 }}>Agregar un logo de marca que todavía no está cargado</div>
-              <div style={{ fontSize: 11.5, color: "#78776f", marginBottom: 10 }}>Para logos que ningún fondo tiene todavía (ej: uno que se perdió en la importación). Después se busca por este nombre al editar cualquier fondo.</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, alignItems: "end" }}>
-                <MiniField label="Nombre de la marca">
-                  <input style={miniInputStyle} value={marcaNombreNuevo} onChange={(e) => setMarcaNombreNuevo(e.target.value)} placeholder="Ej: MFS" />
-                </MiniField>
-                <MiniField label="Imagen del logo">
-                  <FileInputButton accept="image/*" onChange={(e) => setMarcaArchivoNuevo(e.target.files[0])} label="Elegir imagen" />
-                </MiniField>
-                <button onClick={crearMarcaNueva} disabled={marcaGuardandoNueva} style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12.5, cursor: "pointer" }}>
-                  {marcaGuardandoNueva ? "Guardando…" : "Guardar"}
-                </button>
-              </div>
-              {marcaMensajeNueva && <div style={{ marginTop: 8, fontSize: 12, color: marcaMensajeNueva.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{marcaMensajeNueva}</div>}
-            </div>
+            {!mostrarAgregarMarcas ? (
+              <button onClick={() => setMostrarAgregarMarcas(true)} style={{ ...secondaryButtonStyle, marginBottom: 22 }}>+ Agregar marcas</button>
+            ) : (
+              <>
+                <button onClick={() => setMostrarAgregarMarcas(false)} style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", marginBottom: 14, textDecoration: "underline" }}>Ocultar</button>
 
-            <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 14, marginBottom: 22, maxWidth: 640 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 600, color: NAVY, marginBottom: 8 }}>Importar varias marcas a la vez</div>
-              <div style={{ fontSize: 11.5, color: "#78776f", marginBottom: 10 }}>Descomprimí el ZIP en una carpeta y seleccioná todas las imágenes juntas — el nombre de cada marca sale del nombre del archivo (editable antes de aplicar).</div>
-              <div style={{ marginBottom: 12 }}><FileInputButton accept="image/*" multiple onChange={(e) => handleMarcaImportFiles(e.target.files)} label="Elegir archivos" /></div>
-
-              {marcaImportEntradas.length > 0 && (
-                <>
-                  <div style={{ maxHeight: 320, overflowY: "auto", border: "1px solid #eae7dc", borderRadius: 6, marginBottom: 12 }}>
-                    {marcaImportEntradas.map((e, i) => (
-                      <div key={i} style={{ display: "grid", gridTemplateColumns: "40px 1fr auto", gap: 10, alignItems: "center", padding: "8px 10px", borderBottom: "1px solid #f2f0e9" }}>
-                        <img src={URL.createObjectURL(e.file)} alt="" style={{ height: 28, maxWidth: 40, objectFit: "contain" }} />
-                        <input style={miniInputStyle} value={e.nombre} onChange={(ev) => actualizarMarcaImportNombre(i, ev.target.value)} placeholder="Nombre de la marca" />
-                        <button onClick={() => quitarMarcaImportEntrada(i)} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer" }}>Quitar</button>
-                      </div>
-                    ))}
+                <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 14, marginBottom: 22, maxWidth: 680 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, color: NAVY, marginBottom: 8 }}>Agregar un logo de marca que todavía no está cargado</div>
+                  <div style={{ fontSize: 11.5, color: "#78776f", marginBottom: 10 }}>Para logos que ningún fondo tiene todavía (ej: uno que se perdió en la importación). Después se busca por este nombre al editar cualquier fondo.</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "180px 1fr auto", gap: 12, alignItems: "end" }}>
+                    <MiniField label="Nombre de la marca">
+                      <input style={miniInputStyle} value={marcaNombreNuevo} onChange={(e) => setMarcaNombreNuevo(e.target.value)} placeholder="Ej: MFS" />
+                    </MiniField>
+                    <MiniField label="Imagen del logo">
+                      <FileInputButton accept="image/*" onChange={(e) => setMarcaArchivoNuevo(e.target.files[0])} label="Elegir imagen" />
+                    </MiniField>
+                    <button onClick={crearMarcaNueva} disabled={marcaGuardandoNueva} style={{ padding: "10px 16px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12.5, cursor: "pointer", whiteSpace: "nowrap" }}>
+                      {marcaGuardandoNueva ? "Guardando…" : "Guardar"}
+                    </button>
                   </div>
-                  <button onClick={aplicarImportMarcas} disabled={marcaImportAplicando} style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12.5, cursor: "pointer" }}>
-                    {marcaImportAplicando ? "Aplicando…" : `Aplicar (${marcaImportEntradas.length} marca${marcaImportEntradas.length === 1 ? "" : "s"})`}
-                  </button>
-                </>
-              )}
+                  {marcaMensajeNueva && <div style={{ marginTop: 8, fontSize: 12, color: marcaMensajeNueva.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{marcaMensajeNueva}</div>}
+                </div>
+
+                <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 14, marginBottom: 22, maxWidth: 680 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, color: NAVY, marginBottom: 8 }}>Importar varias marcas a la vez</div>
+                  <div style={{ fontSize: 11.5, color: "#78776f", marginBottom: 10 }}>Descomprimí el ZIP en una carpeta y seleccioná todas las imágenes juntas — el nombre de cada marca sale del nombre del archivo (editable antes de aplicar).</div>
+                  <div style={{ marginBottom: 12 }}><FileInputButton accept="image/*" multiple onChange={(e) => handleMarcaImportFiles(e.target.files)} label="Elegir archivos" /></div>
+
+                  {marcaImportEntradas.length > 0 && (
+                    <>
+                      <div style={{ maxHeight: 320, overflowY: "auto", border: "1px solid #eae7dc", borderRadius: 6, marginBottom: 12 }}>
+                        {marcaImportEntradas.map((e, i) => (
+                          <div key={i} style={{ display: "grid", gridTemplateColumns: "40px 1fr auto", gap: 10, alignItems: "center", padding: "8px 10px", borderBottom: "1px solid #f2f0e9" }}>
+                            <img src={URL.createObjectURL(e.file)} alt="" style={{ height: 28, maxWidth: 40, objectFit: "contain" }} />
+                            <input style={miniInputStyle} value={e.nombre} onChange={(ev) => actualizarMarcaImportNombre(i, ev.target.value)} placeholder="Nombre de la marca" />
+                            <button onClick={() => quitarMarcaImportEntrada(i)} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 12, cursor: "pointer" }}>Quitar</button>
+                          </div>
+                        ))}
+                      </div>
+                      <button onClick={aplicarImportMarcas} disabled={marcaImportAplicando} style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12.5, cursor: "pointer" }}>
+                        {marcaImportAplicando ? "Aplicando…" : `Aplicar (${marcaImportEntradas.length} marca${marcaImportEntradas.length === 1 ? "" : "s"})`}
+                      </button>
+                    </>
+                  )}
               {marcaImportResumen && <div style={{ marginTop: 8, fontSize: 12, color: "#3a7d44" }}>{marcaImportResumen}</div>}
             </div>
+              </>
+            )}
 
             {logosCargando && <div style={{ fontSize: 13, color: "#78776f" }}>Cargando…</div>}
 
