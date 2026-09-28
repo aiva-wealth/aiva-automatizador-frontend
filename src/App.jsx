@@ -324,13 +324,29 @@ function PaginaOrden({ token }) {
   const coincide = Math.abs(sumaMontos - montoTotal) < 1;
 
   function construirCuerpoMail() {
-    const filas = items.map((it) => `${it.pct}%\t${it.isin}\t${it.nombre}\t${Math.round(it.monto).toLocaleString("es-AR")}`);
+    // "|" en vez de tabs — algunos clientes de mail (Gmail en particular)
+    // colapsan tabs y espacios múltiples a uno solo al armar el cuerpo del
+    // mailto, y ahí se pierde toda la separación de columnas. El "|" es un
+    // carácter normal, nunca se colapsa, así que la estructura de tabla
+    // se sigue viendo aunque no quede perfectamente alineado.
+    const filas = items.map((it) => `${it.pct}% | ${it.isin} | ${it.nombre} | ${Math.round(it.monto).toLocaleString("es-AR")}`);
     return [
-      `%\tISIN\tNombre\tMonto (USD)`,
+      `%  |  ISIN  |  Nombre  |  Monto (USD)`,
+      `--------------------------------------------`,
       ...filas,
       ``,
       `Monto total: USD ${Math.round(sumaMontos).toLocaleString("es-AR")}`,
     ].join("\n");
+  }
+
+  function ajustarAutomaticamente() {
+    const total = items.reduce((s, it) => s + (Number(it.pct) || 0), 0);
+    if (total === 0) return;
+    const factor = 100 / total;
+    setItems((prev) => prev.map((it) => {
+      const pctNuevo = +(it.pct * factor).toFixed(1);
+      return { ...it, pct: pctNuevo, monto: Math.round((pctNuevo / 100) * montoTotal) };
+    }));
   }
 
   async function enviarOrden() {
@@ -416,7 +432,11 @@ function PaginaOrden({ token }) {
           <div style={{ display: "grid", gridTemplateColumns: "56px 100px 1fr 100px", padding: "10px 14px", alignItems: "center", background: coincide ? "#EAF1EE" : "#FBEAEA" }}>
             <div style={{ fontSize: 11.5, fontWeight: 700, color: coincide ? "#3E7D5E" : "#b23b3b" }}>{sumaPct.toFixed(0)}%</div>
             <div />
-            <div style={{ fontSize: 11, color: coincide ? "#3E7D5E" : "#b23b3b" }}>{coincide ? "Coincide con el monto total" : "No coincide con el monto total — revisá antes de enviar"}</div>
+            <div style={{ fontSize: 11, color: coincide ? "#3E7D5E" : "#b23b3b" }}>
+              {coincide ? "Coincide con el monto total" : (
+                <>No coincide con el monto total — <span onClick={ajustarAutomaticamente} style={{ textDecoration: "underline", cursor: "pointer", fontWeight: 700 }}>ajustar automáticamente a 100%</span></>
+              )}
+            </div>
             <div style={{ fontSize: 12.5, fontWeight: 700, color: coincide ? "#3E7D5E" : "#b23b3b", textAlign: "right" }}>{Math.round(sumaMontos).toLocaleString("es-AR")}</div>
           </div>
         </div>
@@ -2135,7 +2155,20 @@ export default function App() {
     };
   }
 
+  // Cuánto falta (o sobra) para llegar al monto total — la usan tanto el
+  // aviso en pantalla como el bloqueo de "Generar" más abajo, así no se
+  // puede armar una propuesta que después en la página de la orden vaya a
+  // salir "110%" o cualquier otro número que no cierre.
+  function faltaAsignar() {
+    const sumaFondos = proposedAssets.reduce((s, a) => s + (Number(a.monto) || 0), 0);
+    return montoInvertir - sumaFondos - (Number(cashManualPropuesta) || 0);
+  }
+
   async function handleGenerar() {
+    if (tipo === "Propuesta" && Math.abs(faltaAsignar()) >= 1) {
+      setError("El Portafolio propuesto no suma el 100% del monto a invertir todavía — ajustalo en ese paso antes de generar.");
+      return;
+    }
     setGenerando(true); setError(""); setResultado(null);
     try {
       // antes de armar el config, se refrescan descripción/logo/factsheet
@@ -3105,8 +3138,7 @@ export default function App() {
               </div>
 
               {(() => {
-                const sumaFondos = proposedAssets.reduce((s, a) => s + (Number(a.monto) || 0), 0);
-                const falta = montoInvertir - sumaFondos - (Number(cashManualPropuesta) || 0);
+                const falta = faltaAsignar();
                 const faltaPct = montoInvertir ? (Math.abs(falta) / montoInvertir) * 100 : 0;
                 const faltaPctTxt = faltaPct.toLocaleString("es-UY", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
                 return (
@@ -3114,8 +3146,8 @@ export default function App() {
                     {Math.abs(falta) < 1
                       ? "✓ Asignado el 100% del monto."
                       : falta > 0
-                      ? `Falta asignar ${falta.toLocaleString()} USD (${faltaPctTxt}%) para llegar al monto total.`
-                      : `Te pasaste por ${Math.abs(falta).toLocaleString()} USD (${faltaPctTxt}%) del monto total.`}
+                      ? `Falta asignar ${falta.toLocaleString()} USD (${faltaPctTxt}%) para llegar al monto total — no vas a poder generar hasta que esto cierre en 100%.`
+                      : `Te pasaste por ${Math.abs(falta).toLocaleString()} USD (${faltaPctTxt}%) del monto total — no vas a poder generar hasta que esto cierre en 100%.`}
                   </div>
                 );
               })()}
