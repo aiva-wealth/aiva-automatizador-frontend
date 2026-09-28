@@ -565,6 +565,7 @@ export default function App() {
   const [donut2Fijado, setDonut2Fijado] = useState(null);
   const [donutAbierto, setDonutAbierto] = useState(null); // '1' | '2' | null
   const [donutDraft, setDonutDraft] = useState([]); // borrador mientras se edita la que esté abierta
+  const [colorPickerAbiertoPara, setColorPickerAbiertoPara] = useState(null); // id de la categoría cuyo selector de color está abierto
 
   // --- Descripción de activos: selección manual por categoría, ---
   // independiente de lo que se haya cargado en Portafolio propuesto
@@ -685,7 +686,7 @@ export default function App() {
     setRegistroCargando(true);
     const { data } = await supabase
       .from("propuestas")
-      .select("id, tipo, creado_por, repcode, cliente, nro_cuenta, monto, status, archivo_pptx_url, archivo_pdf_url, created_at")
+      .select("id, tipo, creado_por, repcode, asesor_nombre_libre, cliente, nro_cuenta, monto, status, archivo_pptx_url, archivo_pdf_url, created_at")
       .order("created_at", { ascending: false })
       .limit(100);
     setRegistro(data || []);
@@ -851,7 +852,7 @@ export default function App() {
       Tipo: r.tipo === "Revision" ? "Revisión" : "Propuesta",
       "Cliente / Cuenta": r.tipo === "Revision" ? (r.nro_cuenta || "") : (r.cliente || ""),
       "Hecha por": r.creado_por,
-      Asesor: r.repcode,
+      Asesor: r.repcode || r.asesor_nombre_libre || "",
       Monto: r.monto || "",
       Status: r.status,
       PPTX: r.archivo_pptx_url || "",
@@ -2014,8 +2015,11 @@ export default function App() {
   }
 
   // Objeto {label: fracción 0-1} -> array editable [{id,label,pct en 0-100}]
-  function objAArrayDonut(obj) {
-    return Object.keys(obj).map((label) => ({ id: label, label, pct: Math.round(obj[label] * 1000) / 10 }));
+  function objAArrayDonut(obj, fijadoPrevio) {
+    return Object.keys(obj).map((label, idx) => {
+      const guardado = fijadoPrevio && fijadoPrevio.find((it) => (it.label || "").trim() === label);
+      return { id: label, label, pct: Math.round(obj[label] * 1000) / 10, color: (guardado && guardado.color) || PALETA_DONUT[idx % PALETA_DONUT.length] };
+    });
   }
   function arrayDonutAObj(arr) {
     const out = {};
@@ -2033,14 +2037,30 @@ export default function App() {
     return donut2Fijado ? arrayDonutAObj(donut2Fijado) : donut2DesdeDonut1Obj(donut1ActualObj());
   }
 
+  // Colores por categoría — si ya se guardó una vez, se reusa ese color al
+  // volver a mostrar la torta (no solo mientras se edita).
+  function coloresDonutActual(cual) {
+    const fijado = cual === "1" ? donut1Fijado : donut2Fijado;
+    const obj = cual === "1" ? donut1ActualObj() : donut2ActualObj();
+    const out = {};
+    Object.keys(obj).forEach((label, idx) => {
+      const guardado = fijado && fijado.find((it) => (it.label || "").trim() === label);
+      out[label] = (guardado && guardado.color) || PALETA_DONUT[idx % PALETA_DONUT.length];
+    });
+    return out;
+  }
+
   function abrirEdicionDonut(cual) {
     const actual = cual === "1" ? donut1ActualObj() : donut2ActualObj();
-    setDonutDraft(objAArrayDonut(actual));
+    const fijadoPrevio = cual === "1" ? donut1Fijado : donut2Fijado;
+    setDonutDraft(objAArrayDonut(actual, fijadoPrevio));
     setDonutAbierto(cual);
+    setColorPickerAbiertoPara(null);
   }
   function cerrarEdicionDonut() {
     setDonutAbierto(null);
     setDonutDraft([]);
+    setColorPickerAbiertoPara(null);
   }
   function guardarDonut() {
     if (donutAbierto === "1") setDonut1Fijado(donutDraft);
@@ -2053,7 +2073,7 @@ export default function App() {
     if (donutAbierto === cual) cerrarEdicionDonut();
   }
   function agregarCategoriaDonut() {
-    setDonutDraft((prev) => [...prev, { id: `nueva_${Date.now()}`, label: "Nueva categoría", pct: 0 }]);
+    setDonutDraft((prev) => [...prev, { id: `nueva_${Date.now()}`, label: "Nueva categoría", pct: 0, color: PALETA_DONUT[prev.length % PALETA_DONUT.length] }]);
   }
   function quitarCategoriaDonut(id) {
     setDonutDraft((prev) => prev.filter((it) => it.id !== id));
@@ -2247,7 +2267,7 @@ export default function App() {
       const res = await fetch(`${BACKEND_URL}/generar`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tipo, creado_por: usuario, repcode: repcode || null, cliente, config, propuesta_id: editandoPropuestaId || undefined }),
+        body: JSON.stringify({ tipo, creado_por: usuario, repcode: repcode || null, asesor_nombre_libre: !asesorSel ? (asesorQuery.trim() || null) : null, cliente, config, propuesta_id: editandoPropuestaId || undefined }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -2287,6 +2307,7 @@ export default function App() {
     : registro.filter((r) => {
         const q = registroBusqueda.toLowerCase();
         return (r.repcode || "").toLowerCase().includes(q)
+          || (r.asesor_nombre_libre || "").toLowerCase().includes(q)
           || (r.nro_cuenta || "").toLowerCase().includes(q)
           || (r.cliente || "").toLowerCase().includes(q)
           || (r.creado_por || "").toLowerCase().includes(q);
@@ -2300,13 +2321,14 @@ export default function App() {
     const obj = cual === "1" ? donut1ActualObj() : donut2ActualObj();
     const fijado = cual === "1" ? donut1Fijado : donut2Fijado;
     const abierto = donutAbierto === cual;
-    const items = Object.keys(obj).map((label, idx) => ({ label, value: obj[label], color: PALETA_DONUT[idx % PALETA_DONUT.length] }));
+    const coloresGuardados = coloresDonutActual(cual);
+    const items = Object.keys(obj).map((label) => ({ label, value: obj[label], color: coloresGuardados[label] }));
     const totalDraft = donutDraft.reduce((s, it) => s + (Number(it.pct) || 0), 0);
 
     return (
       <div style={{ flex: 1, minWidth: 280, maxWidth: 360 }}>
         <div onClick={() => !abierto && abrirEdicionDonut(cual)} style={{ textAlign: "center", cursor: abierto ? "default" : "pointer" }}>
-          <DonutChart segments={items} />
+          <DonutChart segments={abierto ? donutDraft.map((it) => ({ label: it.label, value: (Number(it.pct) || 0) / 100, color: it.color })) : items} />
           <div style={{ fontSize: 12, fontWeight: 700, color: NAVY, marginTop: 8 }}>{titulo}</div>
           <div style={{ fontSize: 10.5, color: "#9A998F" }}>{fijado ? "Fijada a mano" : "Automática"}{!abierto && " — click para editar"}</div>
         </div>
@@ -2329,7 +2351,23 @@ export default function App() {
         ) : (
           <div style={{ marginTop: 10, background: "#fbf9f5", border: "1px solid #eae7dc", borderRadius: 8, padding: 12 }}>
             {donutDraft.map((it) => (
-              <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+              <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, position: "relative" }}>
+                <div
+                  onClick={() => setColorPickerAbiertoPara((prev) => (prev === it.id ? null : it.id))}
+                  title="Cambiar color"
+                  style={{ width: 20, height: 20, borderRadius: "50%", background: it.color, flexShrink: 0, cursor: "pointer", border: "1px solid rgba(0,0,0,0.15)" }}
+                />
+                {colorPickerAbiertoPara === it.id && (
+                  <div style={{ position: "absolute", top: 26, left: 0, zIndex: 20, background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 8, boxShadow: "0 2px 10px rgba(0,0,0,0.12)", display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
+                    {PALETA_DONUT.map((c) => (
+                      <div
+                        key={c}
+                        onClick={() => { actualizarCategoriaDonut(it.id, "color", c); setColorPickerAbiertoPara(null); }}
+                        style={{ width: 22, height: 22, borderRadius: "50%", background: c, cursor: "pointer", border: it.color === c ? "2px solid " + NAVY : "1px solid rgba(0,0,0,0.15)" }}
+                      />
+                    ))}
+                  </div>
+                )}
                 <input style={{ ...miniInputStyle, padding: "5px 7px", flex: 1, fontSize: 11.5 }} value={it.label} onChange={(e) => actualizarCategoriaDonut(it.id, "label", e.target.value)} />
                 <input type="number" style={{ ...miniInputStyle, padding: "5px 7px", width: 65, fontSize: 11.5 }} value={it.pct} onChange={(e) => actualizarCategoriaDonut(it.id, "pct", e.target.value)} />
                 <button onClick={() => quitarCategoriaDonut(it.id)} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 13, cursor: "pointer" }}>✕</button>
@@ -2823,7 +2861,7 @@ export default function App() {
                     <td style={{ padding: "8px 10px" }}>{r.tipo === "Revision" ? "Revisión" : "Propuesta"}</td>
                     <td style={{ padding: "8px 10px" }}>{r.tipo === "Revision" ? (r.nro_cuenta || "—") : (r.cliente || "—")}</td>
                     <td style={{ padding: "8px 10px" }}>{r.creado_por}</td>
-                    <td style={{ padding: "8px 10px" }}>{r.repcode}</td>
+                    <td style={{ padding: "8px 10px" }}>{r.repcode || (r.asesor_nombre_libre && <span style={{ color: "#9A998F", fontStyle: "italic" }}>{r.asesor_nombre_libre}</span>) || "—"}</td>
                     <td style={{ padding: "8px 10px" }}>{r.monto ? `$${Number(r.monto).toLocaleString()}` : "—"}</td>
                     <td style={{ padding: "8px 10px" }}>
                       <select value={r.status} onChange={(e) => cambiarStatus(r.id, e.target.value)} style={{ ...miniInputStyle, padding: "4px 6px" }}>
@@ -2889,8 +2927,8 @@ export default function App() {
                   <input style={inputStyle} value={nroCuenta} onChange={(e) => setNroCuenta(e.target.value)} />
                 </Field>
               )}
-              <Field label="Asesor / RepCode (opcional)" hint="Se puede armar la propuesta sin asociarla a un asesor puntual.">
-                <input style={inputStyle} value={asesorQuery} onChange={(e) => { setAsesorQuery(e.target.value); setAsesorSel(null); setRepcode(""); }} placeholder="Buscar por RepCode o nombre" />
+              <Field label="Asesor / RepCode (opcional)" hint="Se puede armar la propuesta sin asociarla a un asesor puntual. Si el asesor no aparece en la lista, escribí el nombre igual — queda guardado como referencia aunque no tenga RepCode.">
+                <input style={inputStyle} value={asesorQuery} onChange={(e) => { setAsesorQuery(e.target.value); setAsesorSel(null); setRepcode(""); }} placeholder="Buscar por RepCode o nombre, o escribir cualquier nombre" />
               </Field>
               {asesorResultados.length > 0 && !asesorSel && (
                 <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginTop: -8, marginBottom: 14, maxHeight: 180, overflowY: "auto" }}>
@@ -2900,6 +2938,11 @@ export default function App() {
                       <b>{a.repcode}</b> — {a.nombre}
                     </div>
                   ))}
+                </div>
+              )}
+              {!asesorSel && asesorQuery.trim().length >= 2 && asesorResultados.length === 0 && (
+                <div style={{ fontSize: 11.5, color: "#78776f", marginTop: -8, marginBottom: 14 }}>
+                  No aparece en la lista de asesores — se va a guardar igual como referencia: <b>"{asesorQuery.trim()}"</b> (sin RepCode asociado).
                 </div>
               )}
               {asesorSel && (
