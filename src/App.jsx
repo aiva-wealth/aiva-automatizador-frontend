@@ -1979,9 +1979,12 @@ export default function App() {
       const res = await fetch(`${BACKEND_URL}/generar`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tipo, creado_por: usuario, repcode: repcode || "sin-rep", cliente, config, propuesta_id: editandoPropuestaId || undefined }),
+        body: JSON.stringify({ tipo, creado_por: usuario, repcode: repcode || null, cliente, config, propuesta_id: editandoPropuestaId || undefined }),
       });
-      if (!res.ok) throw new Error(`El backend respondió ${res.status}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `El backend respondió ${res.status}`);
+      }
       const data = await res.json();
       setResultado(data);
     } catch (e) {
