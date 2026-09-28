@@ -1703,7 +1703,17 @@ export default function App() {
   // la vista previa editable de las dos tortas.
   function calcularDonut1AutoObj() {
     const byCat = {};
-    proposedAssets.forEach((a) => { byCat[a.categoria] = (byCat[a.categoria] || 0) + (a.pct || 0) / 100; });
+    let accionesPct = 0;
+    let bonosPct = 0;
+    proposedAssets.forEach((a) => {
+      const tipo = a.tipo_instrumento || "fondo";
+      // Acciones y Bonos salen como categoría propia — no se mezclan
+      // adentro de Renta Fija/Renta Variable aunque tengan esa categoría
+      // asignada para la tabla de Portafolio propuesto.
+      if (tipo === "accion") { accionesPct += (a.pct || 0) / 100; return; }
+      if (tipo === "bono") { bonosPct += (a.pct || 0) / 100; return; }
+      byCat[a.categoria] = (byCat[a.categoria] || 0) + (a.pct || 0) / 100;
+    });
     const cashMonto = Number(cashManualPropuesta) || 0;
     return {
       "Fondos Renta Fija": byCat["Renta Fija"] || 0,
@@ -1711,13 +1721,15 @@ export default function App() {
       "Fondos Multi Asset": byCat["Multi Activo"] || 0,
       "Cash": montoInvertir ? cashMonto / montoInvertir : 0,
       "Fondos Alternativos Liquidos": byCat["Alternativos Líquidos"] || 0,
+      "Acciones Individuales": accionesPct,
+      "Bonos": bonosPct,
     };
   }
 
   function donut2DesdeDonut1Obj(d1) {
     return {
-      "Fondos Renta Fija + Cash": (d1["Fondos Renta Fija"] || 0) + (d1["Cash"] || 0),
-      "Fondos Renta Variable": (d1["Fondos Renta Variable"] || 0) + (d1["Fondos Multi Asset"] || 0) + (d1["Fondos Alternativos Liquidos"] || 0),
+      "Fondos Renta Fija + Cash": (d1["Fondos Renta Fija"] || 0) + (d1["Cash"] || 0) + (d1["Bonos"] || 0),
+      "Fondos Renta Variable": (d1["Fondos Renta Variable"] || 0) + (d1["Fondos Multi Asset"] || 0) + (d1["Fondos Alternativos Liquidos"] || 0) + (d1["Acciones Individuales"] || 0),
     };
   }
 
