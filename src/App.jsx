@@ -272,7 +272,180 @@ function slugify(texto) {
     .replace(/(^-|-$)/g, "") || "marca";
 }
 
+// Página pública "Revisar y confirmar" — a esto llega el asesor cuando
+// clickea cualquiera de los dos botones de la última slide del PPT/PDF. No
+// pasa por la pantalla de "¿Quién sos?" ni por nada del resto de la app:
+// se abre directo con el token de la URL (?orden=...), busca ESA propuesta
+// puntual y listo. Ver App() más abajo, que la renderiza en vez del resto
+// de la app cuando hay un token en la URL.
+function PaginaOrden({ token }) {
+  const [cargando, setCargando] = useState(true);
+  const [propuesta, setPropuesta] = useState(null);
+  const [items, setItems] = useState([]);
+  const [montoTotal, setMontoTotal] = useState(0);
+  const [comentario, setComentario] = useState("");
+  const [quien, setQuien] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [resultado, setResultado] = useState(null); // { tipo: 'orden'|'cambio', mensaje }
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      const { data, error: err } = await supabase.from("propuestas").select("*").eq("token_publico", token).single();
+      if (err || !data) { setCargando(false); return; }
+      setPropuesta(data);
+      const config = data.config || {};
+      const filas = [];
+      (config.categorias_propuesto || []).forEach((cat) => {
+        (cat.fondos || []).forEach((f) => filas.push({ id: f.isin || f.nombre, isin: f.isin || "—", nombre: f.nombre, pct: f.pct || 0, monto: f.monto || 0 }));
+      });
+      (config.bonos_propuesto || []).forEach((b) => filas.push({ id: b.isin || b.nombre, isin: b.isin || "—", nombre: b.nombre, pct: b.pct || 0, monto: b.monto || 0 }));
+      (config.fondos_distributivos_propuesto || []).forEach((f) => filas.push({ id: f.isin || f.nombre, isin: f.isin || "—", nombre: f.nombre, pct: f.pct || 0, monto: f.monto || 0 }));
+      const montoTot = config.monto_total || 0;
+      const cashMonto = config.cash_monto || 0;
+      filas.push({ id: "cash", isin: "—", nombre: "Cash", pct: montoTot ? +((cashMonto / montoTot) * 100).toFixed(1) : 0, monto: cashMonto });
+      setItems(filas);
+      setMontoTotal(montoTot);
+      setCargando(false);
+    })();
+  }, [token]);
+
+  function actualizarPct(id, valor) {
+    const pct = Number(valor) || 0;
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, pct, monto: Math.round((pct / 100) * montoTotal) } : it)));
+  }
+  function actualizarMonto(id, valor) {
+    const monto = Number(valor) || 0;
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, monto, pct: montoTotal ? +((monto / montoTotal) * 100).toFixed(1) : 0 } : it)));
+  }
+
+  const sumaMontos = items.reduce((s, it) => s + (Number(it.monto) || 0), 0);
+  const sumaPct = items.reduce((s, it) => s + (Number(it.pct) || 0), 0);
+  const coincide = Math.abs(sumaMontos - montoTotal) < 1;
+
+  function construirCuerpoMail() {
+    const filas = items.map((it) => `${it.pct}%\t${it.isin}\t${it.nombre}\t${Math.round(it.monto).toLocaleString("es-AR")}`);
+    return [
+      `%\tISIN\tNombre\tMonto (USD)`,
+      ...filas,
+      ``,
+      `Monto total: USD ${Math.round(sumaMontos).toLocaleString("es-AR")}`,
+    ].join("\n");
+  }
+
+  async function enviarOrden() {
+    if (!coincide) return;
+    setEnviando(true);
+    setError("");
+    try {
+      const { error: err } = await supabase.from("propuestas").update({ status: "confirmada" }).eq("id", propuesta.id);
+      if (err) throw err;
+      const asunto = encodeURIComponent(`Orden de inversión — ${propuesta.cliente || ""} (Propuesta #${propuesta.id})`);
+      const cuerpo = encodeURIComponent(construirCuerpoMail());
+      window.location.href = `mailto:Stonexdealing@aiva.com?subject=${asunto}&body=${cuerpo}`;
+      setResultado({ tipo: "orden", mensaje: "Se marcó la propuesta como confirmada. Se abrió tu cliente de mail con la orden lista para enviar — solo falta que le des Enviar ahí." });
+    } catch (e) {
+      setError("No se pudo confirmar: " + (e.message || e));
+    } finally {
+      setEnviando(false);
+    }
+  }
+
+  async function solicitarCambio() {
+    if (!comentario.trim()) { setError("Contanos qué querés ajustar antes de enviar."); return; }
+    setEnviando(true);
+    setError("");
+    try {
+      const { error: err } = await supabase.from("solicitudes_cambio").insert({
+        propuesta_id: propuesta.id, comentario: comentario.trim(), quien: quien.trim() || null,
+      });
+      if (err) throw err;
+      setResultado({ tipo: "cambio", mensaje: "Listo — le avisamos al equipo de AIVA con tu pedido. Te van a contactar con la propuesta ajustada." });
+    } catch (e) {
+      setError("No se pudo enviar: " + (e.message || e));
+    } finally {
+      setEnviando(false);
+    }
+  }
+
+  const wrapStyle = { fontFamily: "Montserrat, sans-serif", background: CREAM, minHeight: "100vh", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "48px 20px", boxSizing: "border-box" };
+  const cardStyle = { background: "#fff", borderRadius: 12, padding: "36px 40px", width: 600, maxWidth: "100%", boxShadow: "0 1px 3px rgba(0,0,0,0.08)" };
+
+  if (cargando) return <div style={wrapStyle}><div style={cardStyle}>Cargando…</div></div>;
+  if (!propuesta) return (
+    <div style={wrapStyle}>
+      <div style={cardStyle}>
+        <h2 style={{ color: NAVY, margin: "0 0 10px" }}>No encontramos esa propuesta</h2>
+        <p style={{ color: "#78776f", fontSize: 13.5 }}>El link puede estar mal copiado, o la propuesta ya no existe. Si te la reenvió tu asesor, pedile que te mande el PDF actualizado.</p>
+      </div>
+    </div>
+  );
+
+  if (resultado) return (
+    <div style={wrapStyle}>
+      <div style={cardStyle}>
+        <div style={{ fontSize: 32, marginBottom: 12 }}>✓</div>
+        <h2 style={{ color: NAVY, margin: "0 0 10px" }}>{resultado.tipo === "orden" ? "Orden confirmada" : "Pedido enviado"}</h2>
+        <p style={{ color: "#5b5b55", fontSize: 14 }}>{resultado.mensaje}</p>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={wrapStyle}>
+      <div style={cardStyle}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: TEAL, textTransform: "uppercase", letterSpacing: 0.5 }}>Propuesta #{propuesta.id}</div>
+        <h2 style={{ color: NAVY, margin: "2px 0 4px", fontSize: 22 }}>{propuesta.cliente || "Cliente"}</h2>
+        <p style={{ color: "#78776f", fontSize: 13, margin: "0 0 22px" }}>Revisá la orden antes de enviarla — podés ajustar % o monto de cualquier fila.</p>
+
+        <div style={{ border: "1px solid #eae7dc", borderRadius: 10, overflow: "hidden", marginBottom: 20 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "56px 100px 1fr 100px", padding: "8px 14px", background: NAVY }}>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#AEB9C9" }}>%</div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#AEB9C9" }}>ISIN</div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#AEB9C9" }}>Activo</div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#AEB9C9", textAlign: "right" }}>Monto (USD)</div>
+          </div>
+          {items.map((it, i) => (
+            <div key={it.id} style={{ display: "grid", gridTemplateColumns: "56px 100px 1fr 100px", padding: "7px 14px", alignItems: "center", background: i % 2 ? "#FBFAF7" : "#fff", borderTop: "1px solid #f2f0e9" }}>
+              <input type="number" value={it.pct} onChange={(e) => actualizarPct(it.id, e.target.value)} style={{ width: 42, padding: "4px 5px", borderRadius: 5, border: "1px solid #D8D5CC", fontSize: 12.5 }} />
+              <div style={{ fontSize: 11, color: "#78776f", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.isin}</div>
+              <div style={{ fontSize: 12.5, color: NAVY }}>{it.nombre}</div>
+              <input type="number" value={it.monto} onChange={(e) => actualizarMonto(it.id, e.target.value)} style={{ width: 90, padding: "4px 5px", borderRadius: 5, border: "1px solid #D8D5CC", fontSize: 12.5, textAlign: "right" }} />
+            </div>
+          ))}
+          <div style={{ display: "grid", gridTemplateColumns: "56px 100px 1fr 100px", padding: "10px 14px", alignItems: "center", background: coincide ? "#EAF1EE" : "#FBEAEA" }}>
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: coincide ? "#3E7D5E" : "#b23b3b" }}>{sumaPct.toFixed(0)}%</div>
+            <div />
+            <div style={{ fontSize: 11, color: coincide ? "#3E7D5E" : "#b23b3b" }}>{coincide ? "Coincide con el monto total" : "No coincide con el monto total — revisá antes de enviar"}</div>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: coincide ? "#3E7D5E" : "#b23b3b", textAlign: "right" }}>{Math.round(sumaMontos).toLocaleString("es-AR")}</div>
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 18, paddingTop: 14, borderTop: "1px solid #eae7dc" }}>
+          <div style={{ fontSize: 12.5, color: "#5b5b55", marginBottom: 6 }}>¿Preferís pedir un cambio en vez de enviar la orden?</div>
+          <input placeholder="Tu nombre (opcional)" value={quien} onChange={(e) => setQuien(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid #D8D5CC", fontSize: 13, marginBottom: 8 }} />
+          <textarea rows={3} placeholder="Contanos qué querés ajustar" value={comentario} onChange={(e) => setComentario(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid #D8D5CC", fontSize: 13, resize: "vertical" }} />
+        </div>
+
+        {error && <div style={{ color: "#b23b3b", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={solicitarCambio} disabled={enviando} style={{ flex: 1, padding: "11px", borderRadius: 8, border: "none", background: "#EAF0F6", color: TEAL, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+            {enviando ? "…" : "Solicitar cambios"}
+          </button>
+          <button onClick={enviarOrden} disabled={enviando || !coincide} style={{ flex: 1, padding: "11px", borderRadius: 8, border: "none", background: coincide ? NAVY : "#C9C4B6", color: "#fff", fontSize: 13, fontWeight: 700, cursor: coincide ? "pointer" : "not-allowed" }}>
+            {enviando ? "…" : "Enviar orden"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
+  const tokenOrden = new URLSearchParams(window.location.search).get("orden");
+  if (tokenOrden) return <PaginaOrden token={tokenOrden} />;
+
   const [usuario, setUsuario] = useState("");
   const [repcode, setRepcode] = useState("");
   const [asesorQuery, setAsesorQuery] = useState("");
@@ -361,6 +534,7 @@ export default function App() {
   const [registroCargando, setRegistroCargando] = useState(false);
   const [registroSeleccionados, setRegistroSeleccionados] = useState({}); // id -> true
   const [registroBusqueda, setRegistroBusqueda] = useState("");
+  const [solicitudesPendientes, setSolicitudesPendientes] = useState([]);
   const [editandoPropuestaId, setEditandoPropuestaId] = useState(null); // si no es null, "Generar" actualiza esta fila en vez de crear una nueva
   const [mostrarAgregarMarcas, setMostrarAgregarMarcas] = useState(false);
 
@@ -451,6 +625,22 @@ export default function App() {
       .limit(100);
     setRegistro(data || []);
     setRegistroCargando(false);
+  }
+
+  // Pedidos de cambio que llegaron desde la página pública (?orden=...) y
+  // todavía nadie atendió — se muestran arriba de la tabla de Registro.
+  async function cargarSolicitudesPendientes() {
+    const { data } = await supabase
+      .from("solicitudes_cambio")
+      .select("id, propuesta_id, comentario, quien, created_at")
+      .eq("atendida", false)
+      .order("created_at", { ascending: false });
+    setSolicitudesPendientes(data || []);
+  }
+
+  async function marcarSolicitudAtendida(id) {
+    await supabase.from("solicitudes_cambio").update({ atendida: true }).eq("id", id);
+    setSolicitudesPendientes((prev) => prev.filter((s) => s.id !== id));
   }
 
   // Vuelve a abrir una propuesta ya generada para editarla — reconstruye
@@ -609,7 +799,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (vista === "registro") cargarRegistro();
+    if (vista === "registro") { cargarRegistro(); cargarSolicitudesPendientes(); }
   }, [vista]);
 
   // --- Biblioteca de fondos ---
@@ -2505,6 +2695,28 @@ export default function App() {
               <button onClick={eliminarPropuestasSeleccionadas} style={{ padding: "8px 14px", borderRadius: 6, border: "none", background: "#b23b3b", color: "#fff", fontSize: 12.5, cursor: "pointer" }}>
                 Eliminar {Object.values(registroSeleccionados).filter(Boolean).length} seleccionado(s)
               </button>
+            </div>
+          )}
+
+          {solicitudesPendientes.length > 0 && (
+            <div style={{ marginBottom: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+              {solicitudesPendientes.map((s) => {
+                const prop = registro.find((r) => r.id === s.propuesta_id);
+                return (
+                  <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "#FBF3E4", borderRadius: 8 }}>
+                    <span style={{ fontSize: 15 }}>🔔</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: NAVY }}>
+                        {prop ? (prop.cliente || `Propuesta #${prop.id}`) : `Propuesta #${s.propuesta_id}`}
+                        {s.quien && ` — ${s.quien} pidió un cambio`}
+                      </div>
+                      <div style={{ fontSize: 12, color: "#78776f", marginTop: 2 }}>"{s.comentario}"</div>
+                    </div>
+                    {prop && <button onClick={() => abrirParaEditar(prop)} style={{ border: "none", background: "none", color: TEAL, fontSize: 12.5, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>Editar →</button>}
+                    <button onClick={() => marcarSolicitudAtendida(s.id)} style={{ border: "none", background: "none", color: "#a5a399", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}>Descartar</button>
+                  </div>
+                );
+              })}
             </div>
           )}
 
