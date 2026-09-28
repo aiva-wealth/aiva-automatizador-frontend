@@ -909,6 +909,21 @@ export default function App() {
     }
   }
 
+  // Elimina la marca de la tabla marcas_logo — no toca los fondos que la
+  // tenían asociada (siguen con su logo_url tal cual, solo desaparece la
+  // entrada de "marca" en sí). Pensado para casos como una marca duplicada
+  // vacía (0 fondos) que quedó de una importación anterior.
+  async function eliminarMarca(marca, cantidadFondos) {
+    const advertencia = cantidadFondos > 0
+      ? `Esta marca tiene ${cantidadFondos} fondo(s) asociado(s) — van a seguir teniendo su logo igual, solo se borra la "marca" en sí (no vas a poder buscarla más por nombre para asignarla a otro fondo). ¿Eliminar igual?`
+      : "¿Eliminar esta marca?";
+    if (!window.confirm(advertencia)) return;
+    const { error } = await supabase.from("marcas_logo").delete().eq("id", marca.id);
+    if (error) { alert("Error al eliminar: " + error.message); return; }
+    await cargarTodasLasMarcas();
+    await cargarAuditoriaLogos();
+  }
+
   // Sacarle el logo a un fondo puntual (sin borrar la marca ni afectar a
   // los demás fondos que la tengan).
   async function quitarFondoDeGrupo(isin) {
@@ -2360,7 +2375,10 @@ export default function App() {
 
                           {fila.tipo === "marca" && (
                             <div style={{ marginTop: 12, marginBottom: 14 }}>
-                              <div style={{ fontSize: 11.5, fontWeight: 600, color: NAVY, marginBottom: 6 }}>Cambiar el logo de esta marca</div>
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                                <div style={{ fontSize: 11.5, fontWeight: 600, color: NAVY }}>Cambiar el logo de esta marca</div>
+                                <button onClick={() => eliminarMarca(fila.marca, fila.fondos.length)} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 11.5, cursor: "pointer" }}>Eliminar marca</button>
+                              </div>
                               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                                 <FileInputButton accept="image/*" onChange={(e) => setMarcaLogoNuevoArchivo(e.target.files[0])} label="Elegir imagen" />
                                 <button onClick={() => actualizarLogoMarca(fila.marca)} disabled={marcaLogoActualizando || !marcaLogoNuevoArchivo} style={{ padding: "7px 14px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}>
