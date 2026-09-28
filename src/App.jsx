@@ -26,8 +26,8 @@ const RISK_TEXT = {
 // Cada tipo de documento tiene su propio recorrido de pasos — Revisión no
 // arma un portafolio propuesto (es sobre una cuenta que ya existe), pero sí
 // tiene "Evolución de la cuenta", que Propuesta no tiene.
-const STEPS_PROPUESTA = ["Portada", "Equipo", "Propuesta de valor", "Estrategia", "Portafolio actual", "Portafolio propuesto", "Descripción de activos", "Comentarios"];
-const STEPS_REVISION = ["Portada", "Equipo", "Propuesta de valor", "Estrategia", "Evolución de la cuenta", "Portafolio actual", "Comentarios"];
+const STEPS_PROPUESTA = ["Portada", "Equipo", "Estrategia", "Portafolio actual", "Portafolio propuesto", "Descripción de activos", "Comentarios"];
+const STEPS_REVISION = ["Portada", "Equipo", "Estrategia", "Evolución de la cuenta", "Portafolio actual", "Comentarios"];
 
 // Fotos del equipo, embebidas acá (achicadas a 360px / JPEG liviano) para
 // que la propia app las pueda mostrar en la grilla de Equipo tal cual van a
@@ -283,7 +283,7 @@ export default function App() {
   const [tipo, setTipo] = useState("Propuesta");
   const [cliente, setCliente] = useState("");
   const [nroCuenta, setNroCuenta] = useState("");
-  const [incluirPagina2, setIncluirPagina2] = useState(false);
+  const [incluirPagina2, setIncluirPagina2] = useState(true);
   const [team, setTeam] = useState(DEFAULT_TEAM);
   const [equipoExpandidoId, setEquipoExpandidoId] = useState(null);
   const [incluirValueProp, setIncluirValueProp] = useState(true);
@@ -2616,11 +2616,15 @@ export default function App() {
                 </div>
               )}
               {tipo === "Propuesta" && (
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                   <input type="checkbox" checked={incluirPagina2} onChange={(e) => setIncluirPagina2(e.target.checked)} />
                   <span style={{ fontSize: 13.5 }}>Incluir página 2</span>
                 </div>
               )}
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="checkbox" checked={incluirValueProp} onChange={(e) => setIncluirValueProp(e.target.checked)} />
+                <span style={{ fontSize: 13.5 }}>Incluir "Propuesta de valor"</span>
+              </div>
             </Section>
           )}
 
@@ -2677,15 +2681,6 @@ export default function App() {
                 })}
               </div>
               <button onClick={() => { const nuevoId = Date.now(); setTeam((prev) => [...prev, { id: nuevoId, nombre: "", puesto: "", educacion: "", incluido: true }]); setEquipoExpandidoId(nuevoId); }} style={{ padding: "8px 14px", borderRadius: 10, border: "1px dashed #C9C4B6", background: "none", cursor: "pointer", fontSize: 12.5, color: TEAL, fontWeight: 600 }}>+ Agregar integrante</button>
-            </Section>
-          )}
-
-          {stepName === "Propuesta de valor" && (
-            <Section title="Propuesta de valor">
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input type="checkbox" checked={incluirValueProp} onChange={(e) => setIncluirValueProp(e.target.checked)} />
-                <span style={{ fontSize: 13.5 }}>Incluir esta página</span>
-              </div>
             </Section>
           )}
 
