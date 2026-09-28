@@ -52,6 +52,16 @@ const DEFAULT_TEAM = [
 
 const CATEGORIAS = ["Renta Fija", "Multi Activo", "Renta Variable", "Alternativos Líquidos"];
 
+// Compara sin importar mayúsculas/minúsculas ni espacios de más — un Excel
+// cargado a mano por distinta gente en el equipo va a tener inconsistencias
+// de tipeo ("Multi activo" vs "Multi Activo"), y esto no debe hacer que la
+// fila directamente desaparezca de la torta o de la tabla del PPT.
+function normalizarCategoria(valor) {
+  if (!valor) return null;
+  const limpio = String(valor).trim().toLowerCase();
+  return CATEGORIAS.find((c) => c.toLowerCase() === limpio) || null;
+}
+
 // Columnas por tipo de instrumento — mismo set y mismo orden que arma
 // engine_propuesto_extra.py en el PPTX, para que la tabla en pantalla sea
 // un espejo real de lo que va a salir en el documento. "fijo: true" son
@@ -1038,7 +1048,7 @@ export default function App() {
           isin: codigo ? String(codigo).trim() : "",
           nombre: obj["Nombre"] ? String(obj["Nombre"]).trim() : "",
           sector: obj["Sector"] || "",
-          categoria: obj["Categoría"] || CATEGORIAS[0],
+          categoria: normalizarCategoria(obj["Categoría"]) || CATEGORIAS[0],
           // % e Inversión (USD): se leen si están — quien los use decide
           // qué hacer si faltan (la Biblioteca los ignora directamente, ya
           // que "fondos" no tiene esas columnas; Portafolio propuesto los
@@ -1712,7 +1722,7 @@ export default function App() {
       // asignada para la tabla de Portafolio propuesto.
       if (tipo === "accion") { accionesPct += (a.pct || 0) / 100; return; }
       if (tipo === "bono") { bonosPct += (a.pct || 0) / 100; return; }
-      byCat[a.categoria] = (byCat[a.categoria] || 0) + (a.pct || 0) / 100;
+      byCat[normalizarCategoria(a.categoria) || a.categoria] = (byCat[normalizarCategoria(a.categoria) || a.categoria] || 0) + (a.pct || 0) / 100;
     });
     const cashMonto = Number(cashManualPropuesta) || 0;
     return {
@@ -1810,7 +1820,7 @@ export default function App() {
     const categorias = CATEGORIAS.map((label) => ({
       label: label === "Renta Fija" ? "Fondos Renta Fija" : label === "Multi Activo" ? "Fondo Multi Activo" : label === "Renta Variable" ? "Fondo Renta Variable" : "Fondos Alternativos Líquidos",
       fondos: assetsAUsar
-        .filter((a) => a.categoria === label && (a.tipo_instrumento === "fondo" || a.tipo_instrumento === "accion" || !a.tipo_instrumento))
+        .filter((a) => (normalizarCategoria(a.categoria) || a.categoria) === label && (a.tipo_instrumento === "fondo" || a.tipo_instrumento === "accion" || !a.tipo_instrumento))
         .map((a) => ({
           isin: a.isin, nombre: a.nombre, sector: a.sector || "", ytd: a.ytd || 0, y1: a.y1 || 0, y3: a.y3 || 0, y5: a.y5 || 0, pct: a.pct, monto: a.monto, ter: a.ter || 0,
           extra: a.extra || {},
