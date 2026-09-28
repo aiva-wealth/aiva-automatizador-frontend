@@ -287,6 +287,7 @@ function PaginaOrden({ token }) {
   const [quien, setQuien] = useState("");
   const [enviando, setEnviando] = useState(false);
   const [resultado, setResultado] = useState(null); // { tipo: 'orden'|'cambio', mensaje }
+  const [copiadoManualMsg, setCopiadoManualMsg] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -349,6 +350,33 @@ function PaginaOrden({ token }) {
     }));
   }
 
+  function construirTablaHtml() {
+    const filaHtml = (cols, esHeader) => `<tr>${cols.map((c, i) =>
+      `<${esHeader ? "th" : "td"} style="border:1px solid #ccc;padding:6px 10px;text-align:${i === 0 || i === cols.length - 1 ? "right" : "left"};${esHeader ? "background:#16223A;color:#fff;" : ""}">${c}</${esHeader ? "th" : "td"}>`
+    ).join("")}</tr>`;
+    const filas = items.map((it) => filaHtml([`${it.pct}%`, it.isin, it.nombre, Math.round(it.monto).toLocaleString("es-AR")], false));
+    return `<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px;">`
+      + filaHtml(["%", "ISIN", "Nombre", "Monto (USD)"], true)
+      + filas.join("")
+      + `<tr><td colspan="3" style="border:1px solid #ccc;padding:6px 10px;font-weight:bold;">Monto total</td><td style="border:1px solid #ccc;padding:6px 10px;text-align:right;font-weight:bold;">USD ${Math.round(sumaMontos).toLocaleString("es-AR")}</td></tr>`
+      + `</table>`;
+  }
+
+  async function copiarTablaAlPortapapeles() {
+    try {
+      const html = construirTablaHtml();
+      const texto = construirCuerpoMail();
+      const item = new ClipboardItem({
+        "text/html": new Blob([html], { type: "text/html" }),
+        "text/plain": new Blob([texto], { type: "text/plain" }),
+      });
+      await navigator.clipboard.write([item]);
+      return true;
+    } catch (e) {
+      return false; // navegador viejo o sin permiso — sigue andando con el texto plano de siempre
+    }
+  }
+
   async function enviarOrden() {
     if (!coincide) return;
     setEnviando(true);
@@ -356,10 +384,20 @@ function PaginaOrden({ token }) {
     try {
       const { error: err } = await supabase.from("propuestas").update({ status: "confirmada" }).eq("id", propuesta.id);
       if (err) throw err;
+      const copiadoConFormato = await copiarTablaAlPortapapeles();
       const asunto = encodeURIComponent(`Orden de inversión — ${propuesta.cliente || ""} (Propuesta #${propuesta.id})`);
-      const cuerpo = encodeURIComponent(construirCuerpoMail());
+      const cuerpo = encodeURIComponent(
+        copiadoConFormato
+          ? "Pegá acá la orden que se copió con formato de tabla (Ctrl+V o Cmd+V):\n\n"
+          : construirCuerpoMail()
+      );
       window.location.href = `mailto:Stonexdealing@aiva.com?subject=${asunto}&body=${cuerpo}`;
-      setResultado({ tipo: "orden", mensaje: "Se marcó la propuesta como confirmada. Se abrió tu cliente de mail con la orden lista para enviar — solo falta que le des Enviar ahí." });
+      setResultado({
+        tipo: "orden",
+        mensaje: copiadoConFormato
+          ? "Se marcó la propuesta como confirmada. Se abrió tu cliente de mail y copiamos la orden con formato de tabla — pegala ahí (Ctrl+V o Cmd+V) antes de enviar."
+          : "Se marcó la propuesta como confirmada. Se abrió tu cliente de mail con la orden lista para enviar — solo falta que le des Enviar ahí.",
+      });
     } catch (e) {
       setError("No se pudo confirmar: " + (e.message || e));
     } finally {
@@ -412,7 +450,14 @@ function PaginaOrden({ token }) {
       <div style={cardStyle}>
         <div style={{ fontSize: 12, fontWeight: 700, color: TEAL, textTransform: "uppercase", letterSpacing: 0.5 }}>Propuesta #{propuesta.id}</div>
         <h2 style={{ color: NAVY, margin: "2px 0 4px", fontSize: 22 }}>{propuesta.cliente || "Cliente"}</h2>
-        <p style={{ color: "#78776f", fontSize: 13, margin: "0 0 22px" }}>Revisá la orden antes de enviarla — podés ajustar % o monto de cualquier fila.</p>
+        <p style={{ color: "#78776f", fontSize: 13, margin: "0 0 10px" }}>Revisá la orden antes de enviarla — podés ajustar % o monto de cualquier fila.</p>
+        <button
+          onClick={async () => { const ok = await copiarTablaAlPortapapeles(); setCopiadoManualMsg(ok ? "✓ Copiado — pegalo donde quieras con Ctrl+V" : "No se pudo copiar en este navegador"); }}
+          style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", padding: 0, marginBottom: 12, textDecoration: "underline" }}
+        >
+          Copiar tabla al portapapeles
+        </button>
+        {copiadoManualMsg && <div style={{ fontSize: 11.5, color: copiadoManualMsg.startsWith("✓") ? "#3a7d44" : "#b23b3b", marginTop: -8, marginBottom: 12 }}>{copiadoManualMsg}</div>}
 
         <div style={{ border: "1px solid #eae7dc", borderRadius: 10, overflow: "hidden", marginBottom: 20 }}>
           <div style={{ display: "grid", gridTemplateColumns: "56px 100px 1fr 100px", padding: "8px 14px", background: NAVY }}>
