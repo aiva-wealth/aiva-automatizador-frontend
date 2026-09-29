@@ -468,10 +468,10 @@ function PaginaOrden({ token }) {
           </div>
           {items.map((it, i) => (
             <div key={it.id} style={{ display: "grid", gridTemplateColumns: "56px 100px 1fr 100px", padding: "7px 14px", alignItems: "center", background: i % 2 ? "#FBFAF7" : "#fff", borderTop: "1px solid #f2f0e9" }}>
-              <input type="number" value={it.pct} onChange={(e) => actualizarPct(it.id, e.target.value)} style={{ width: 42, padding: "4px 5px", borderRadius: 5, border: "1px solid #D8D5CC", fontSize: 12.5 }} />
+              <input type="number" onFocus={(e) => e.target.select()} value={it.pct} onChange={(e) => actualizarPct(it.id, e.target.value)} style={{ width: 42, padding: "4px 5px", borderRadius: 5, border: "1px solid #D8D5CC", fontSize: 12.5 }} />
               <div style={{ fontSize: 11, color: "#78776f", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.isin}</div>
               <div style={{ fontSize: 12.5, color: NAVY }}>{it.nombre}</div>
-              <input type="number" value={it.monto} onChange={(e) => actualizarMonto(it.id, e.target.value)} style={{ width: 90, padding: "4px 5px", borderRadius: 5, border: "1px solid #D8D5CC", fontSize: 12.5, textAlign: "right" }} />
+              <input type="number" onFocus={(e) => e.target.select()} value={it.monto} onChange={(e) => actualizarMonto(it.id, e.target.value)} style={{ width: 90, padding: "4px 5px", borderRadius: 5, border: "1px solid #D8D5CC", fontSize: 12.5, textAlign: "right" }} />
             </div>
           ))}
           <div style={{ display: "grid", gridTemplateColumns: "56px 100px 1fr 100px", padding: "10px 14px", alignItems: "center", background: coincide ? "#EAF1EE" : "#FBEAEA" }}>
@@ -529,40 +529,101 @@ export default function App() {
 
   const [currentAssets, setCurrentAssets] = useState([]);
   const [cashValorRevision, setCashValorRevision] = useState(0);
-  const [montoInvertir, setMontoInvertir] = useState(500000);
   const [fondoQuery, setFondoQuery] = useState("");
   const [fondoResultados, setFondoResultados] = useState([]);
-  const [proposedAssets, setProposedAssets] = useState([]);
-  const [cashManualPropuesta, setCashManualPropuesta] = useState(0);
   const [cashActualPropuesta, setCashActualPropuesta] = useState(0);
   const [portafolioActualImportMensaje, setPortafolioActualImportMensaje] = useState("");
   const [nuevoActivoNombre, setNuevoActivoNombre] = useState("");
   const [nuevoActivoIsin, setNuevoActivoIsin] = useState("");
   const [comentarios, setComentarios] = useState("");
 
-  // --- Columnas visibles/orden por tipo de instrumento en "Portafolio
-  // propuesto" (no se guarda en Supabase, es solo cómo se ve mientras se
-  // arma esta propuesta puntual) — arranca con todas las columnas no-fijas
-  // visibles, en el orden por defecto.
-  const [columnasConfig, setColumnasConfig] = useState(() => {
+  function columnasConfigInicial() {
     const init = {};
     Object.keys(COLUMNAS_POR_TIPO).forEach((t) => {
       init[t] = COLUMNAS_POR_TIPO[t].filter((c) => !c.fijo).map((c) => c.key);
     });
     return init;
-  });
+  }
+  function escenarioNuevo(nombre) {
+    return {
+      id: `esc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      nombre: nombre || "Estrategia 1",
+      montoInvertir: 500000,
+      proposedAssets: [],
+      cashManualPropuesta: 0,
+      columnasConfig: columnasConfigInicial(),
+      columnasExtra: { fondo: [], bono: [], fondo_distributivo: [] },
+      donut1Fijado: null,
+      donut2Fijado: null,
+    };
+  }
+
+  // --- Portafolio propuesto: uno o varios escenarios/estrategias ---
+  // Cada propuesta puede tener 2 o 3 portafolios propuestos alternativos
+  // (distintas estrategias), cada uno con su propio monto a invertir,
+  // instrumentos, cash y asset allocation — Descripción de activos y
+  // Comentarios siguen siendo comunes a toda la propuesta, no se
+  // duplican. "escenarioActivoId" indica cuál se está viendo/editando
+  // ahora en pantalla; el resto del código seguía escrito pensando en un
+  // solo portafolio, así que las variables de abajo (proposedAssets,
+  // montoInvertir, etc.) son un espejo del escenario activo — leerlas y
+  // escribirlas sigue funcionando igual que antes, solo que por debajo
+  // apuntan siempre al escenario que esté activo en cada momento.
+  const [escenarios, setEscenarios] = useState(() => [escenarioNuevo("Estrategia 1")]);
+  const [escenarioActivoId, setEscenarioActivoId] = useState(() => escenarios[0].id);
+  const escenarioActivo = escenarios.find((e) => e.id === escenarioActivoId) || escenarios[0];
+
+  function actualizarEscenarioActivo(campo, valorOFn) {
+    setEscenarios((prev) => prev.map((e) => (e.id !== escenarioActivo.id ? e : {
+      ...e,
+      [campo]: typeof valorOFn === "function" ? valorOFn(e[campo]) : valorOFn,
+    })));
+  }
+  function agregarEscenario() {
+    const nuevo = escenarioNuevo(`Estrategia ${escenarios.length + 1}`);
+    setEscenarios((prev) => [...prev, nuevo]);
+    setEscenarioActivoId(nuevo.id);
+    setDonutAbierto(null); setColumnasAbiertoPara(null);
+  }
+  function quitarEscenario(id) {
+    if (escenarios.length <= 1) return; // siempre tiene que quedar al menos uno
+    if (!window.confirm("¿Eliminar esta estrategia? Se pierden sus instrumentos y su asset allocation.")) return;
+    setEscenarios((prev) => {
+      const restantes = prev.filter((e) => e.id !== id);
+      if (escenarioActivoId === id) setEscenarioActivoId(restantes[0].id);
+      return restantes;
+    });
+    setDonutAbierto(null); setColumnasAbiertoPara(null);
+  }
+  function renombrarEscenario(id, nombre) {
+    setEscenarios((prev) => prev.map((e) => (e.id === id ? { ...e, nombre } : e)));
+  }
+  function cambiarEscenarioActivo(id) {
+    setEscenarioActivoId(id);
+    setDonutAbierto(null); setColumnasAbiertoPara(null);
+  }
+
+  const montoInvertir = escenarioActivo.montoInvertir;
+  const setMontoInvertir = (v) => actualizarEscenarioActivo("montoInvertir", v);
+  const proposedAssets = escenarioActivo.proposedAssets;
+  const setProposedAssets = (v) => actualizarEscenarioActivo("proposedAssets", v);
+  const cashManualPropuesta = escenarioActivo.cashManualPropuesta;
+  const setCashManualPropuesta = (v) => actualizarEscenarioActivo("cashManualPropuesta", v);
+  const columnasConfig = escenarioActivo.columnasConfig;
+  const setColumnasConfig = (v) => actualizarEscenarioActivo("columnasConfig", v);
+  const columnasExtra = escenarioActivo.columnasExtra;
+  const setColumnasExtra = (v) => actualizarEscenarioActivo("columnasExtra", v);
+  const donut1Fijado = escenarioActivo.donut1Fijado;
+  const setDonut1Fijado = (v) => actualizarEscenarioActivo("donut1Fijado", v);
+  const donut2Fijado = escenarioActivo.donut2Fijado;
+  const setDonut2Fijado = (v) => actualizarEscenarioActivo("donut2Fijado", v);
+
   const [columnasAbiertoPara, setColumnasAbiertoPara] = useState(null); // tipo cuyo panel de columnas está abierto
-  // Columnas agregadas a mano por el usuario (sin dato de biblioteca detrás
-  // — se completan a mano por fila). "accion" comparte las de "fondo" ya
-  // que van a la misma tabla en el PPT.
-  const [columnasExtra, setColumnasExtra] = useState({ fondo: [], bono: [], fondo_distributivo: [] });
   const [nuevaColumnaNombre, setNuevaColumnaNombre] = useState("");
 
   // Asset allocation: dos tortas independientes. null = sigue automática
   // (recalculada en vivo a partir de lo cargado); array = quedó fija
   // porque el usuario la editó y apretó Guardar.
-  const [donut1Fijado, setDonut1Fijado] = useState(null);
-  const [donut2Fijado, setDonut2Fijado] = useState(null);
   const [donutAbierto, setDonutAbierto] = useState(null); // '1' | '2' | null
   const [donutDraft, setDonutDraft] = useState([]); // borrador mientras se edita la que esté abierta
   const [colorPickerAbiertoPara, setColorPickerAbiertoPara] = useState(null); // id de la categoría cuyo selector de color está abierto
@@ -734,7 +795,6 @@ export default function App() {
     setIncluirValueProp(config.incluir_valor !== false);
     setPerfil(config.perfil_riesgo || "Balanceado");
     setComentarios(config.comentarios || "");
-    setMontoInvertir(config.monto_total || 0);
 
     if (Array.isArray(config.equipo) && config.equipo.length > 0) {
       setTeam(config.equipo.map((m, i) => ({
@@ -754,45 +814,64 @@ export default function App() {
       const cashRow = (config.portafolio_actual || []).find((f) => f.nombre === "Cash");
       setCashActualPropuesta(cashRow ? cashRow.importe : 0);
 
-      const nuevosProposed = [];
-      (config.categorias_propuesto || []).forEach((cat) => {
-        const categoria = CATEGORIA_LABEL_A_VALOR[cat.label] || "Renta Variable";
-        (cat.fondos || []).forEach((f) => {
-          nuevosProposed.push({ ...f, categoria, tipo_instrumento: "fondo", ytd: f.ytd || 0, y1: f.y1 || 0, y3: f.y3 || 0, y5: f.y5 || 0 });
-        });
-      });
-      (config.bonos_propuesto || []).forEach((b) => {
-        nuevosProposed.push({ ...b, categoria: "Renta Fija", tipo_instrumento: "bono" });
-      });
-      (config.fondos_distributivos_propuesto || []).forEach((f) => {
-        nuevosProposed.push({ ...f, categoria: "Renta Fija", tipo_instrumento: "fondo_distributivo" });
-      });
-      setProposedAssets(nuevosProposed);
-      setCashManualPropuesta(config.cash_monto || 0);
+      // "portafolios_propuestos" es el formato nuevo (una o varias
+      // estrategias); si la propuesta se guardó ANTES de que existiera
+      // eso, viene todo suelto arriba (categorias_propuesto, cash_monto,
+      // etc. a nivel raíz) — se envuelve como si fuera 1 solo escenario,
+      // para que editar propuestas viejas siga funcionando igual.
+      const bundlesGuardados = Array.isArray(config.portafolios_propuestos) && config.portafolios_propuestos.length > 0
+        ? config.portafolios_propuestos
+        : [{
+            nombre: "Estrategia 1",
+            categorias_propuesto: config.categorias_propuesto || [],
+            bonos_propuesto: config.bonos_propuesto || [],
+            fondos_distributivos_propuesto: config.fondos_distributivos_propuesto || [],
+            cash_monto: config.cash_monto || 0,
+            monto_total: config.monto_total || 0,
+            asset_allocation_donut1: config.asset_allocation_donut1,
+            asset_allocation_donut2: config.asset_allocation_donut2,
+            columnas_extra: config.columnas_extra || {},
+          }];
 
-      const nuevoColumnasConfig = {};
-      Object.keys(COLUMNAS_POR_TIPO).forEach((t) => { nuevoColumnasConfig[t] = COLUMNAS_POR_TIPO[t].filter((c) => !c.fijo).map((c) => c.key); });
-      const nuevasColumnasExtra = { fondo: [], bono: [], fondo_distributivo: [] };
-      Object.entries(config.columnas_extra || {}).forEach(([tipoExtra, labels]) => {
-        (labels || []).forEach((label) => {
-          const key = `extra_${tipoExtra}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-          nuevasColumnasExtra[tipoExtra].push({ key, label, esExtra: true });
-          nuevoColumnasConfig[tipoExtra] = [...(nuevoColumnasConfig[tipoExtra] || []), key];
-          if (tipoExtra === "fondo") nuevoColumnasConfig.accion = [...(nuevoColumnasConfig.accion || []), key];
+      const nuevosEscenarios = bundlesGuardados.map((bundle, idx) => {
+        const nuevosProposed = [];
+        (bundle.categorias_propuesto || []).forEach((cat) => {
+          const categoria = CATEGORIA_LABEL_A_VALOR[cat.label] || "Renta Variable";
+          (cat.fondos || []).forEach((f) => {
+            nuevosProposed.push({ ...f, categoria, tipo_instrumento: "fondo", ytd: f.ytd || 0, y1: f.y1 || 0, y3: f.y3 || 0, y5: f.y5 || 0 });
+          });
         });
-      });
-      setColumnasExtra(nuevasColumnasExtra);
-      setColumnasConfig(nuevoColumnasConfig);
+        (bundle.bonos_propuesto || []).forEach((b) => { nuevosProposed.push({ ...b, categoria: "Renta Fija", tipo_instrumento: "bono" }); });
+        (bundle.fondos_distributivos_propuesto || []).forEach((f) => { nuevosProposed.push({ ...f, categoria: "Renta Fija", tipo_instrumento: "fondo_distributivo" }); });
 
-      // Las dos tortas quedan fijadas con los valores exactos que tenía
-      // esta propuesta (no recalculadas de nuevo) — "Volver a automático"
-      // sigue disponible si preferís que se recalculen desde cero.
-      if (config.asset_allocation_donut1) {
-        setDonut1Fijado(Object.entries(config.asset_allocation_donut1).map(([label, frac]) => ({ id: label, label, pct: Math.round(frac * 1000) / 10 })));
-      }
-      if (config.asset_allocation_donut2) {
-        setDonut2Fijado(Object.entries(config.asset_allocation_donut2).map(([label, frac]) => ({ id: label, label, pct: Math.round(frac * 1000) / 10 })));
-      }
+        const nuevoColumnasConfig = columnasConfigInicial();
+        const nuevasColumnasExtra = { fondo: [], bono: [], fondo_distributivo: [] };
+        Object.entries(bundle.columnas_extra || {}).forEach(([tipoExtra, labels]) => {
+          (labels || []).forEach((label) => {
+            const key = `extra_${tipoExtra}_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
+            nuevasColumnasExtra[tipoExtra].push({ key, label, esExtra: true });
+            nuevoColumnasConfig[tipoExtra] = [...(nuevoColumnasConfig[tipoExtra] || []), key];
+            if (tipoExtra === "fondo") nuevoColumnasConfig.accion = [...(nuevoColumnasConfig.accion || []), key];
+          });
+        });
+
+        return {
+          id: `edit_${Date.now()}_${idx}`,
+          nombre: bundle.nombre || `Estrategia ${idx + 1}`,
+          montoInvertir: bundle.monto_total || 0,
+          proposedAssets: nuevosProposed,
+          cashManualPropuesta: bundle.cash_monto || 0,
+          columnasConfig: nuevoColumnasConfig,
+          columnasExtra: nuevasColumnasExtra,
+          // Las dos tortas quedan fijadas con los valores exactos que
+          // tenía esta propuesta (no recalculadas de nuevo) — "Volver a
+          // automático" sigue disponible si preferís recalcular desde cero.
+          donut1Fijado: bundle.asset_allocation_donut1 ? Object.entries(bundle.asset_allocation_donut1).map(([label, frac]) => ({ id: label, label, pct: Math.round(frac * 1000) / 10 })) : null,
+          donut2Fijado: bundle.asset_allocation_donut2 ? Object.entries(bundle.asset_allocation_donut2).map(([label, frac]) => ({ id: label, label, pct: Math.round(frac * 1000) / 10 })) : null,
+        };
+      });
+      setEscenarios(nuevosEscenarios);
+      setEscenarioActivoId(nuevosEscenarios[0].id);
 
       setDescSeleccion(config.fondos_por_categoria || { "Renta Fija & Multi Activo": [], "Renta Variable": [], "Alternativos Líquidos": [] });
     } else {
@@ -1982,11 +2061,11 @@ export default function App() {
   // --- Asset allocation: valor automático (derivado de los % cargados en
   // Portafolio propuesto) — se usa como base tanto en buildConfig como en
   // la vista previa editable de las dos tortas.
-  function calcularDonut1AutoObj() {
+  function calcularDonut1AutoObj(esc = escenarioActivo) {
     const byCat = {};
     let accionesPct = 0;
     let bonosPct = 0;
-    proposedAssets.forEach((a) => {
+    esc.proposedAssets.forEach((a) => {
       const tipo = a.tipo_instrumento || "fondo";
       // Acciones y Bonos salen como categoría propia — no se mezclan
       // adentro de Renta Fija/Renta Variable aunque tengan esa categoría
@@ -1995,12 +2074,12 @@ export default function App() {
       if (tipo === "bono") { bonosPct += (a.pct || 0) / 100; return; }
       byCat[normalizarCategoria(a.categoria) || a.categoria] = (byCat[normalizarCategoria(a.categoria) || a.categoria] || 0) + (a.pct || 0) / 100;
     });
-    const cashMonto = Number(cashManualPropuesta) || 0;
+    const cashMonto = Number(esc.cashManualPropuesta) || 0;
     return {
       "Fondos Renta Fija": byCat["Renta Fija"] || 0,
       "Fondos Renta Variable": byCat["Renta Variable"] || 0,
       "Fondos Multi Asset": byCat["Multi Activo"] || 0,
-      "Cash": montoInvertir ? cashMonto / montoInvertir : 0,
+      "Cash": esc.montoInvertir ? cashMonto / esc.montoInvertir : 0,
       "Fondos Alternativos Liquidos": byCat["Alternativos Líquidos"] || 0,
       "Acciones Individuales": accionesPct,
       "Bonos": bonosPct,
@@ -2030,11 +2109,11 @@ export default function App() {
   // Valor "oficial" de cada torta ahora mismo: si el usuario la fijó
   // (apretó Guardar alguna vez), esa; si no, la automática recalculada en
   // vivo — donut2 automática se deriva de donut1 (fijada o automática).
-  function donut1ActualObj() {
-    return donut1Fijado ? arrayDonutAObj(donut1Fijado) : calcularDonut1AutoObj();
+  function donut1ActualObj(esc = escenarioActivo) {
+    return esc.donut1Fijado ? arrayDonutAObj(esc.donut1Fijado) : calcularDonut1AutoObj(esc);
   }
-  function donut2ActualObj() {
-    return donut2Fijado ? arrayDonutAObj(donut2Fijado) : donut2DesdeDonut1Obj(donut1ActualObj());
+  function donut2ActualObj(esc = escenarioActivo) {
+    return esc.donut2Fijado ? arrayDonutAObj(esc.donut2Fijado) : donut2DesdeDonut1Obj(donut1ActualObj(esc));
   }
 
   // Colores por categoría — si ya se guardó una vez, se reusa ese color al
@@ -2100,13 +2179,11 @@ export default function App() {
     setProposedAssets((prev) => prev.map((a, i) => (i === idx ? { ...a, extra: { ...(a.extra || {}), [label]: valor } } : a)));
   }
 
-  function buildConfig(proposedAssetsOverride, descSeleccionOverride) {
-    const assetsAUsar = proposedAssetsOverride || proposedAssets;
-    const descAUsar = descSeleccionOverride || descSeleccion;
-    // La tabla "estándar" del PPT (build_portafolio_propuesto) es la que
-    // usan Fondos y Acciones — Acciones comparte el mismo layout de
-    // columnas, con TER en blanco. Bonos y Fondos distributivos arman sus
-    // propias slides aparte (ver más abajo), así que quedan afuera de acá.
+  // Arma el "bundle" de un solo escenario/estrategia — categorías de
+  // fondos+acciones, bonos, distributivos, cash y las dos tortas. Se llama
+  // una vez por cada estrategia (ver más abajo, en portafolios_propuestos).
+  function construirBundleEscenario(esc) {
+    const assetsAUsar = esc.proposedAssets;
     const categorias = CATEGORIAS.map((label) => ({
       label: label === "Renta Fija" ? "Fondos Renta Fija" : label === "Multi Activo" ? "Fondo Multi Activo" : label === "Renta Variable" ? "Fondo Renta Variable" : "Fondos Alternativos Líquidos",
       fondos: assetsAUsar
@@ -2117,10 +2194,6 @@ export default function App() {
         })),
     })).filter((c) => c.fondos.length > 0);
 
-    // Bonos y Fondos distributivos: cada uno arma su propia sección
-    // apilada en la misma página de Portafolio Propuesto, solo si hay al
-    // menos uno cargado. Cupón anual y Dividendo anual se calculan acá
-    // mismo a partir del monto asignado, no vienen de la biblioteca.
     const bonosPropuesto = assetsAUsar.filter((a) => a.tipo_instrumento === "bono").map((a) => ({
       isin: a.isin, nombre: a.nombre, sector: a.sector || "",
       cupon_pct: a.cupon_pct || 0, rating: a.rating || "", price: a.price || 0,
@@ -2137,10 +2210,26 @@ export default function App() {
       pct: a.pct, monto: a.monto, extra: a.extra || {},
     }));
 
-    const cashMonto = Number(cashManualPropuesta) || 0;
+    return {
+      nombre: esc.nombre,
+      categorias_propuesto: categorias,
+      cash_monto: Number(esc.cashManualPropuesta) || 0,
+      monto_total: esc.montoInvertir,
+      asset_allocation_donut1: donut1ActualObj(esc),
+      asset_allocation_donut2: donut2ActualObj(esc),
+      bonos_propuesto: bonosPropuesto,
+      fondos_distributivos_propuesto: fondosDistributivosPropuesto,
+      columnas_extra: {
+        fondo: esc.columnasExtra.fondo.map((c) => c.label),
+        bono: esc.columnasExtra.bono.map((c) => c.label),
+        fondo_distributivo: esc.columnasExtra.fondo_distributivo.map((c) => c.label),
+      },
+    };
+  }
 
-    const donut1 = donut1ActualObj();
-    const donut2 = donut2ActualObj();
+  function buildConfig(escenariosOverride, descSeleccionOverride) {
+    const escenariosAUsar = escenariosOverride || escenarios;
+    const descAUsar = descSeleccionOverride || descSeleccion;
 
     const fondosPorCategoria = {
       "Renta Fija & Multi Activo": descAUsar["Renta Fija & Multi Activo"].map((a) => ({ nombre: a.nombre, descripcion: a.descripcion || "", factsheet_url: a.factsheet_url || "", logo_url: a.logo_url || "" })),
@@ -2203,19 +2292,11 @@ export default function App() {
       columnas_visibles: ["pct", "isin", "nombre", "costo", "valor_actual", "rendimiento"],
       asset_allocation: assetAllocationRevision,
       evolucion_image_base64: evolucionImageBase64,
-      categorias_propuesto: categorias,
-      cash_monto: cashMonto,
-      monto_total: montoInvertir,
-      asset_allocation_donut1: donut1,
-      asset_allocation_donut2: donut2,
+      // Uno o varios portafolios propuestos (distintas estrategias) — si
+      // hay más de uno, el backend arma una sección completa (tabla +
+      // asset allocation) por cada uno, con un cartel divisorio antes.
+      portafolios_propuestos: escenariosAUsar.map((esc) => construirBundleEscenario(esc)),
       fondos_por_categoria: fondosPorCategoria,
-      bonos_propuesto: bonosPropuesto,
-      columnas_extra: {
-        fondo: columnasExtra.fondo.map((c) => c.label),
-        bono: columnasExtra.bono.map((c) => c.label),
-        fondo_distributivo: columnasExtra.fondo_distributivo.map((c) => c.label),
-      },
-      fondos_distributivos_propuesto: fondosDistributivosPropuesto,
       comentarios,
     };
   }
@@ -2224,23 +2305,30 @@ export default function App() {
   // aviso en pantalla como el bloqueo de "Generar" más abajo, así no se
   // puede armar una propuesta que después en la página de la orden vaya a
   // salir "110%" o cualquier otro número que no cierre.
+  function faltaAsignarEnEscenario(esc) {
+    const sumaFondos = esc.proposedAssets.reduce((s, a) => s + (Number(a.monto) || 0), 0);
+    return esc.montoInvertir - sumaFondos - (Number(esc.cashManualPropuesta) || 0);
+  }
   function faltaAsignar() {
-    const sumaFondos = proposedAssets.reduce((s, a) => s + (Number(a.monto) || 0), 0);
-    return montoInvertir - sumaFondos - (Number(cashManualPropuesta) || 0);
+    return faltaAsignarEnEscenario(escenarioActivo);
   }
 
   async function handleGenerar() {
-    if (tipo === "Propuesta" && Math.abs(faltaAsignar()) >= 1) {
-      setError("El Portafolio propuesto no suma el 100% del monto a invertir todavía — ajustalo en ese paso antes de generar.");
-      return;
+    if (tipo === "Propuesta") {
+      const conProblema = escenarios.find((esc) => Math.abs(faltaAsignarEnEscenario(esc)) >= 1);
+      if (conProblema) {
+        setError(`"${conProblema.nombre}" no suma el 100% del monto a invertir todavía — ajustalo en Portafolio propuesto antes de generar.`);
+        return;
+      }
     }
     setGenerando(true); setError(""); setResultado(null);
     try {
       // antes de armar el config, se refrescan descripción/logo/factsheet
       // de cada fondo directo desde la biblioteca — así no importa si el
       // fondo se agregó a la propuesta antes o después de actualizarlo en
-      // la biblioteca, siempre viaja la versión más reciente
-      const isinsUsados = proposedAssets.map((a) => a.isin).filter(Boolean);
+      // la biblioteca, siempre viaja la versión más reciente. Se hace para
+      // TODOS los escenarios/estrategias, no solo el que está a la vista.
+      const isinsUsados = escenarios.flatMap((esc) => esc.proposedAssets.map((a) => a.isin)).filter(Boolean);
       const isinsDesc = Object.values(descSeleccion).flat().map((a) => a.isin).filter(Boolean);
       const todosLosIsin = [...new Set([...isinsUsados, ...isinsDesc])];
       let frescos = {};
@@ -2248,11 +2336,14 @@ export default function App() {
         const { data } = await supabase.from("fondos").select("isin, descripcion, factsheet_url, logo_url").in("isin", todosLosIsin);
         (data || []).forEach((f) => { frescos[f.isin] = f; });
       }
-      const proposedAssetsFrescos = proposedAssets.map((a) => ({
-        ...a,
-        descripcion: frescos[a.isin]?.descripcion ?? a.descripcion,
-        factsheet_url: frescos[a.isin]?.factsheet_url ?? a.factsheet_url,
-        logo_url: frescos[a.isin]?.logo_url ?? a.logo_url,
+      const escenariosFrescos = escenarios.map((esc) => ({
+        ...esc,
+        proposedAssets: esc.proposedAssets.map((a) => ({
+          ...a,
+          descripcion: frescos[a.isin]?.descripcion ?? a.descripcion,
+          factsheet_url: frescos[a.isin]?.factsheet_url ?? a.factsheet_url,
+          logo_url: frescos[a.isin]?.logo_url ?? a.logo_url,
+        })),
       }));
       const descSeleccionFresca = Object.fromEntries(
         Object.entries(descSeleccion).map(([cat, lista]) => [cat, lista.map((a) => ({
@@ -2263,7 +2354,7 @@ export default function App() {
         }))])
       );
 
-      const config = buildConfig(proposedAssetsFrescos, descSeleccionFresca);
+      const config = buildConfig(escenariosFrescos, descSeleccionFresca);
       const res = await fetch(`${BACKEND_URL}/generar`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2369,7 +2460,7 @@ export default function App() {
                   </div>
                 )}
                 <input style={{ ...miniInputStyle, padding: "5px 7px", flex: 1, fontSize: 11.5 }} value={it.label} onChange={(e) => actualizarCategoriaDonut(it.id, "label", e.target.value)} />
-                <input type="number" style={{ ...miniInputStyle, padding: "5px 7px", width: 65, fontSize: 11.5 }} value={it.pct} onChange={(e) => actualizarCategoriaDonut(it.id, "pct", e.target.value)} />
+                <input type="number" onFocus={(e) => e.target.select()} style={{ ...miniInputStyle, padding: "5px 7px", width: 65, fontSize: 11.5 }} value={it.pct} onChange={(e) => actualizarCategoriaDonut(it.id, "pct", e.target.value)} />
                 <button onClick={() => quitarCategoriaDonut(it.id)} style={{ border: "none", background: "none", color: "#b23b3b", fontSize: 13, cursor: "pointer" }}>✕</button>
               </div>
             ))}
@@ -3059,7 +3150,7 @@ export default function App() {
           {stepName === "Portafolio actual" && tipo === "Revision" && (
             <Section title="Portafolio actual" subtitle="Cargá cada activo de la cuenta. El % y el rendimiento se calculan solos a partir del costo y el valor actual — no hace falta tipearlos.">
               <Field label="Cash / equivalentes (USD)" hint="Lo que está en efectivo o cuasi-efectivo, no en un activo puntual.">
-                <input type="number" style={{ ...inputStyle, maxWidth: 220 }} value={cashValorRevision} onChange={(e) => setCashValorRevision(+e.target.value)} />
+                <input type="number" onFocus={(e) => e.target.select()} style={{ ...inputStyle, maxWidth: 220 }} value={cashValorRevision} onChange={(e) => setCashValorRevision(+e.target.value)} />
               </Field>
 
               <Field label="Importar desde Excel (Open Tax Lots de StoneX)" hint="Toma Symbol/ID, Description, Adjusted Cost y Mkt Value de la hoja 'By Security' y agrega una fila por activo.">
@@ -3089,7 +3180,7 @@ export default function App() {
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, alignItems: "end", marginBottom: 8 }}>
                       <MiniField label="Precio unidad (opcional)">
-                        <input type="number" style={miniInputStyle} value={a.precio_unidad} onChange={(e) => {
+                        <input type="number" onFocus={(e) => e.target.select()} style={miniInputStyle} value={a.precio_unidad} onChange={(e) => {
                           const precio_unidad = e.target.value;
                           setCurrentAssets((prev) => prev.map((x, j) => {
                             if (j !== i) return x;
@@ -3100,7 +3191,7 @@ export default function App() {
                         }} />
                       </MiniField>
                       <MiniField label="Cantidad (opcional)">
-                        <input type="number" style={miniInputStyle} value={a.cantidad} onChange={(e) => {
+                        <input type="number" onFocus={(e) => e.target.select()} style={miniInputStyle} value={a.cantidad} onChange={(e) => {
                           const cantidad = e.target.value;
                           setCurrentAssets((prev) => prev.map((x, j) => {
                             if (j !== i) return x;
@@ -3116,10 +3207,10 @@ export default function App() {
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, alignItems: "end" }}>
                       <MiniField label="Costo total (USD)">
-                        <input type="number" style={miniInputStyle} value={a.costo} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, costo: +e.target.value } : x))} />
+                        <input type="number" onFocus={(e) => e.target.select()} style={miniInputStyle} value={a.costo} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, costo: +e.target.value } : x))} />
                       </MiniField>
                       <MiniField label="Valor actual (USD)">
-                        <input type="number" style={miniInputStyle} value={a.valor_actual} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, valor_actual: +e.target.value } : x))} />
+                        <input type="number" onFocus={(e) => e.target.select()} style={miniInputStyle} value={a.valor_actual} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, valor_actual: +e.target.value } : x))} />
                       </MiniField>
                       <MiniField label="Rendimiento (calculado)">
                         <div style={{ ...miniInputStyle, background: CREAM, fontWeight: 600, color: rendimiento >= 0 ? "#3a7d44" : "#b23b3b" }}>{rendimiento}%</div>
@@ -3138,7 +3229,7 @@ export default function App() {
           {stepName === "Portafolio actual" && tipo === "Propuesta" && (
             <Section title="Portafolio actual" subtitle="El % y el rendimiento se calculan solos — % sobre el total (activos + cash), rendimiento sobre costo vs. importe actual.">
               <Field label="Cash (USD)" hint="StoneX e ITA no incluyen el efectivo — hay que cargarlo aparte. Utmost sí lo trae solo (se suma automático al importar el PDF).">
-                <input type="number" style={{ ...inputStyle, maxWidth: 220 }} value={cashActualPropuesta} onChange={(e) => setCashActualPropuesta(+e.target.value)} />
+                <input type="number" onFocus={(e) => e.target.select()} style={{ ...inputStyle, maxWidth: 220 }} value={cashActualPropuesta} onChange={(e) => setCashActualPropuesta(+e.target.value)} />
               </Field>
               <Field label="Importar desde archivo — StoneX, ITA o Utmost (detecta solo cuál es)" hint="StoneX/ITA: Excel. Utmost: el PDF de 'Valuation Statement'. Se agrega una fila por activo; ITA y Utmost no traen cash, StoneX tampoco.">
                 <FileInputButton accept=".xlsx,.xls,.pdf" onChange={(e) => handleImportPortafolioActual(e.target.files[0])} label="Elegir archivo" />
@@ -3163,10 +3254,10 @@ export default function App() {
                         <div style={{ ...miniInputStyle, background: CREAM, fontWeight: 600 }}>{pct}%</div>
                       </MiniField>
                       <MiniField label="Importe USD">
-                        <input style={miniInputStyle} type="number" value={a.importe} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, importe: +e.target.value } : x))} />
+                        <input style={miniInputStyle} type="number" onFocus={(e) => e.target.select()} value={a.importe} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, importe: +e.target.value } : x))} />
                       </MiniField>
                       <MiniField label="Costo USD">
-                        <input style={miniInputStyle} type="number" value={a.costo || 0} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, costo: +e.target.value } : x))} />
+                        <input style={miniInputStyle} type="number" onFocus={(e) => e.target.select()} value={a.costo || 0} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, costo: +e.target.value } : x))} />
                       </MiniField>
                       <MiniField label="Rendimiento">
                         <div style={{ ...miniInputStyle, background: CREAM, fontWeight: 600, color: rendimiento >= 0 ? "#3a7d44" : "#b23b3b" }}>{rendimiento}%</div>
@@ -3181,11 +3272,35 @@ export default function App() {
 
           {stepName === "Portafolio propuesto" && (
             <Section title="Portafolio propuesto" subtitle="Buscá fondos en la biblioteca, asigná % o monto (se calculan solos entre sí), y completá los rendimientos históricos si los tenés a mano.">
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 18, paddingBottom: 14, borderBottom: "1px solid #eae7dc" }}>
+                {escenarios.map((esc) => {
+                  const activo = esc.id === escenarioActivoId;
+                  return (
+                    <div key={esc.id} style={{ display: "flex", alignItems: "center", gap: 4, background: activo ? NAVY : "#F0EDE5", borderRadius: 999, padding: "6px 6px 6px 14px" }}>
+                      <input
+                        value={esc.nombre}
+                        onChange={(e) => renombrarEscenario(esc.id, e.target.value)}
+                        onClick={() => !activo && cambiarEscenarioActivo(esc.id)}
+                        readOnly={!activo}
+                        style={{
+                          border: "none", background: "none", outline: "none", fontSize: 12.5, fontWeight: 600, cursor: activo ? "text" : "pointer",
+                          color: activo ? "#fff" : NAVY, width: Math.max(esc.nombre.length * 7.5, 70),
+                        }}
+                      />
+                      {escenarios.length > 1 && (
+                        <button onClick={() => quitarEscenario(esc.id)} style={{ border: "none", background: "none", color: activo ? "#AEB9C9" : "#a5a399", fontSize: 13, cursor: "pointer", padding: "0 4px" }}>✕</button>
+                      )}
+                    </div>
+                  );
+                })}
+                <button onClick={agregarEscenario} style={{ border: "1px dashed #C9C4B6", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", padding: "7px 14px", borderRadius: 999 }}>+ Agregar estrategia</button>
+              </div>
+
               <Field label="Monto total a invertir (USD)">
-                <input type="number" style={{ ...inputStyle, maxWidth: 220 }} value={montoInvertir} onChange={(e) => setMontoInvertir(+e.target.value)} />
+                <input type="number" onFocus={(e) => e.target.select()} style={{ ...inputStyle, maxWidth: 220 }} value={montoInvertir} onChange={(e) => setMontoInvertir(+e.target.value)} />
               </Field>
               <Field label="Cash (USD)" hint="La parte del monto que se deja en efectivo, sin invertir en ningún fondo.">
-                <input type="number" style={{ ...inputStyle, maxWidth: 220 }} value={cashManualPropuesta} onChange={(e) => setCashManualPropuesta(+e.target.value)} />
+                <input type="number" onFocus={(e) => e.target.select()} style={{ ...inputStyle, maxWidth: 220 }} value={cashManualPropuesta} onChange={(e) => setCashManualPropuesta(+e.target.value)} />
               </Field>
               <Field label="Buscar fondo (ISIN o nombre) en la biblioteca de Supabase">
                 <input style={inputStyle} value={fondoQuery} onChange={(e) => setFondoQuery(e.target.value)} placeholder="Ej: IE00B3XXRP09 o Vanguard" />
@@ -3315,14 +3430,14 @@ export default function App() {
                     )}
 
                     <div style={{ overflowX: "auto", background: "#fff", border: "1px solid #eae7dc", borderRadius: 8 }}>
-                      <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+                      <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12, tableLayout: "auto" }}>
                         <thead>
                           <tr style={{ background: CREAM }}>
-                            <th style={{ padding: "6px 8px", textAlign: "left", whiteSpace: "nowrap" }}>Categoría</th>
-                            <th style={{ padding: "6px 8px", textAlign: "left", whiteSpace: "nowrap" }}>%</th>
-                            <th style={{ padding: "6px 8px", textAlign: "left", whiteSpace: "nowrap" }}>Monto (USD)</th>
+                            <th style={{ padding: "5px 6px", textAlign: "left" }}>Categoría</th>
+                            <th style={{ padding: "5px 6px", textAlign: "left" }}>%</th>
+                            <th style={{ padding: "5px 6px", textAlign: "left" }}>Monto (USD)</th>
                             {colsOrdenadas.map((c) => (
-                              <th key={c.key} style={{ padding: "6px 8px", textAlign: "left", whiteSpace: "nowrap" }}>{c.label}</th>
+                              <th key={c.key} style={{ padding: "5px 6px", textAlign: "left", minWidth: 60 }}>{c.label}</th>
                             ))}
                             <th></th>
                           </tr>
@@ -3336,13 +3451,13 @@ export default function App() {
                                 </select>
                               </td>
                               <td style={{ padding: "4px 8px" }}>
-                                <input type="number" style={{ ...miniInputStyle, padding: "4px 6px", width: 60, fontSize: 11.5 }} value={a.pct} onChange={(e) => updateProposedField(i, "pct", +e.target.value)} />
+                                <input type="number" onFocus={(e) => e.target.select()} style={{ ...miniInputStyle, padding: "4px 6px", width: 60, fontSize: 11.5 }} value={a.pct} onChange={(e) => updateProposedField(i, "pct", +e.target.value)} />
                               </td>
                               <td style={{ padding: "4px 8px" }}>
-                                <input type="number" style={{ ...miniInputStyle, padding: "4px 6px", width: 90, fontSize: 11.5 }} value={a.monto} onChange={(e) => updateProposedField(i, "monto", +e.target.value)} />
+                                <input type="number" onFocus={(e) => e.target.select()} style={{ ...miniInputStyle, padding: "4px 6px", width: 90, fontSize: 11.5 }} value={a.monto} onChange={(e) => updateProposedField(i, "monto", +e.target.value)} />
                               </td>
                               {colsOrdenadas.map((c) => (
-                                <td key={c.key} style={{ padding: "4px 8px" }}>
+                                <td key={c.key} style={{ padding: "3px 6px" }}>
                                   {c.esExtra ? (
                                     <input
                                       type="text"
