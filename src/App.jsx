@@ -3,12 +3,40 @@ import { supabase } from "./supabaseClient";
 import * as XLSX from "xlsx";
 
 const NAVY = "#16223A";
-const CREAM = "#F5F1EC";
-const TEAL = "#557787";
+const CREAM = "#EEEBE5";
+const TEAL = "#4F8A8B";
 const LIGHTBLUE = "#D1DFEA";
 const GREY = "#9B9B93";
-const CARD_SHADOW = "0 1px 2px rgba(20,20,20,0.04), 0 8px 24px rgba(20,20,20,0.04)";
-const RADIUS = 14;
+const CARD_SHADOW = "0 24px 48px -32px rgba(22,34,58,0.35)";
+const RADIUS = 28;
+
+// --- Estilo "Aurora": tipografía Sora + reglas globales (botones en pastilla,
+// campos rellenos sin borde, foco suave). Se inyecta una sola vez; los
+// estilos en línea de cada componente siguen mandando en tamaños y colores.
+if (typeof document !== "undefined" && !document.getElementById("aiva-aurora-style")) {
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = "https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&display=swap";
+  document.head.appendChild(link);
+  const st = document.createElement("style");
+  st.id = "aiva-aurora-style";
+  st.textContent = `
+    body { margin: 0; font-family: 'Sora', sans-serif; background: #EEEBE5; -webkit-font-smoothing: antialiased; }
+    button { font-family: inherit; border-radius: 999px !important; transition: filter .15s ease, background-color .15s ease; }
+    button:hover:not(:disabled) { filter: brightness(1.07); }
+    button:disabled { opacity: .55; cursor: not-allowed !important; }
+    input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=range]):not([data-plain]),
+    select, textarea { font-family: inherit; border: none !important; background-color: #F4F2EE !important; border-radius: 14px !important; outline: none; color: #16223A; }
+    textarea { border-radius: 16px !important; }
+    input:focus:not([type=checkbox]):not([type=radio]):not([data-plain]), select:focus, textarea:focus { box-shadow: 0 0 0 2px rgba(79,138,139,.35); }
+    input[type=checkbox], input[type=radio] { accent-color: #4F8A8B; }
+    input::placeholder, textarea::placeholder { color: #A8B0BD; }
+    a { color: #4F8A8B; }
+    ::-webkit-scrollbar { height: 8px; width: 8px; }
+    ::-webkit-scrollbar-thumb { background: #D5D9E0; border-radius: 8px; }
+  `;
+  document.head.appendChild(st);
+}
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
 
@@ -127,11 +155,11 @@ Object.keys(COLUMNAS_POR_TIPO).forEach((t) => {
 
 function Section({ title, subtitle, children }) {
   return (
-    <div style={{ background: "#fff", borderRadius: RADIUS, boxShadow: CARD_SHADOW, padding: "24px 26px", marginBottom: 22 }}>
-      <h3 style={{ color: NAVY, fontSize: 17, fontWeight: 700, marginTop: 0, marginBottom: subtitle ? 4 : 18 }}>
+    <div style={{ background: "#fff", borderRadius: RADIUS, boxShadow: CARD_SHADOW, padding: "34px 30px", marginBottom: 16 }}>
+      <h3 style={{ color: NAVY, fontSize: 24, fontWeight: 400, letterSpacing: -0.4, marginTop: 0, marginBottom: subtitle ? 6 : 24 }}>
         {title}
       </h3>
-      {subtitle && <p style={{ fontSize: 12.5, color: "#8b8a80", marginTop: 0, marginBottom: 18, lineHeight: 1.5 }}>{subtitle}</p>}
+      {subtitle && <p style={{ fontSize: 13, color: "#8D99AB", fontWeight: 300, marginTop: 0, marginBottom: 26, lineHeight: 1.6, maxWidth: 680 }}>{subtitle}</p>}
       {children}
     </div>
   );
@@ -140,9 +168,9 @@ function Section({ title, subtitle, children }) {
 function Field({ label, children, hint }) {
   return (
     <div style={{ marginBottom: 14 }}>
-      <label style={{ display: "block", fontSize: 12.5, color: "#5b5b55", marginBottom: 5, fontWeight: 600 }}>{label}</label>
+      <label style={{ display: "block", fontSize: 11.5, color: "#8D99AB", marginBottom: 7, fontWeight: 500, letterSpacing: 0.3 }}>{label}</label>
       {children}
-      {hint && <div style={{ fontSize: 11, color: "#a5a399", marginTop: 3 }}>{hint}</div>}
+      {hint && <div style={{ fontSize: 11, color: "#A8B0BD", marginTop: 5, fontWeight: 300 }}>{hint}</div>}
     </div>
   );
 }
@@ -153,27 +181,27 @@ function Field({ label, children, hint }) {
 function MiniField({ label, children }) {
   return (
     <div>
-      <div style={{ fontSize: 10, color: "#9b9993", marginBottom: 3, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700 }}>{label}</div>
+      <div style={{ fontSize: 10, color: "#A8B0BD", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.6, fontWeight: 500 }}>{label}</div>
       {children}
     </div>
   );
 }
 
 const inputStyle = {
-  width: "100%", padding: "10px 13px", borderRadius: 10, border: "1px solid #E4E1D6",
-  fontSize: 14, fontFamily: "inherit", boxSizing: "border-box", background: "#fff",
+  width: "100%", padding: "13px 16px", borderRadius: 16, border: "none",
+  fontSize: 14, fontFamily: "inherit", boxSizing: "border-box", background: "#F4F2EE", color: NAVY, minHeight: 44,
 };
 
-const miniInputStyle = { ...inputStyle, padding: "7px 10px", borderRadius: 8, fontSize: 13 };
+const miniInputStyle = { ...inputStyle, padding: "7px 10px", borderRadius: 10, fontSize: 12.5, minHeight: 36 };
 
 const primaryButtonStyle = {
-  padding: "10px 20px", borderRadius: 10, border: "none", background: TEAL, color: "#fff",
-  fontWeight: 700, fontSize: 13.5, cursor: "pointer", boxShadow: "0 4px 12px rgba(85,119,135,0.3)",
+  padding: "0 26px", minHeight: 46, borderRadius: 999, border: "none", background: TEAL, color: "#fff",
+  fontWeight: 500, fontSize: 13, cursor: "pointer", letterSpacing: 0.2,
 };
 
 const secondaryButtonStyle = {
-  padding: "10px 18px", borderRadius: 10, border: "1px solid #DEDAD0", background: "#fff",
-  color: "#3A3A38", fontWeight: 600, fontSize: 13, cursor: "pointer",
+  padding: "0 22px", minHeight: 44, borderRadius: 999, border: "none", background: "#F2F0EB",
+  color: "#6C7A90", fontWeight: 500, fontSize: 13, cursor: "pointer",
 };
 
 // Botón de archivo con estilo propio — <input type="file"> nativo no se
@@ -227,7 +255,7 @@ function FileInputButton({ accept, multiple, onChange, label }) {
       }}
       style={{
         display: "flex", alignItems: "center", gap: 10, padding: "5px 7px", margin: "-5px -7px",
-        borderRadius: 10, border: `1.5px dashed ${arrastrando ? TEAL : "transparent"}`,
+        borderRadius: 16, border: `1.5px dashed ${arrastrando ? TEAL : "transparent"}`,
         background: arrastrando ? "#EAF0F6" : "transparent",
       }}
     >
@@ -422,14 +450,14 @@ function PaginaOrden({ token }) {
     }
   }
 
-  const wrapStyle = { fontFamily: "Montserrat, sans-serif", background: CREAM, minHeight: "100vh", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "48px 20px", boxSizing: "border-box" };
-  const cardStyle = { background: "#fff", borderRadius: 12, padding: "36px 40px", width: 600, maxWidth: "100%", boxShadow: "0 1px 3px rgba(0,0,0,0.08)" };
+  const wrapStyle = { fontFamily: "'Sora', sans-serif", background: CREAM, minHeight: "100vh", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "48px 20px", boxSizing: "border-box" };
+  const cardStyle = { background: "#fff", borderRadius: RADIUS, padding: "40px 40px", width: 640, maxWidth: "100%", boxShadow: CARD_SHADOW };
 
   if (cargando) return <div style={wrapStyle}><div style={cardStyle}>Cargando…</div></div>;
   if (!propuesta) return (
     <div style={wrapStyle}>
       <div style={cardStyle}>
-        <h2 style={{ color: NAVY, margin: "0 0 10px" }}>No encontramos esa propuesta</h2>
+        <h2 style={{ color: NAVY, margin: "0 0 10px", fontSize: 24, fontWeight: 400, letterSpacing: -0.4 }}>No encontramos esa propuesta</h2>
         <p style={{ color: "#78776f", fontSize: 13.5 }}>El link puede estar mal copiado, o la propuesta ya no existe. Si te la reenvió tu asesor, pedile que te mande el PDF actualizado.</p>
       </div>
     </div>
@@ -439,7 +467,7 @@ function PaginaOrden({ token }) {
     <div style={wrapStyle}>
       <div style={cardStyle}>
         <div style={{ fontSize: 32, marginBottom: 12 }}>✓</div>
-        <h2 style={{ color: NAVY, margin: "0 0 10px" }}>{resultado.tipo === "orden" ? "Orden confirmada" : "Pedido enviado"}</h2>
+        <h2 style={{ color: NAVY, margin: "0 0 10px", fontSize: 24, fontWeight: 400, letterSpacing: -0.4 }}>{resultado.tipo === "orden" ? "Orden confirmada" : "Pedido enviado"}</h2>
         <p style={{ color: "#5b5b55", fontSize: 14 }}>{resultado.mensaje}</p>
       </div>
     </div>
@@ -449,7 +477,7 @@ function PaginaOrden({ token }) {
     <div style={wrapStyle}>
       <div style={cardStyle}>
         <div style={{ fontSize: 12, fontWeight: 700, color: TEAL, textTransform: "uppercase", letterSpacing: 0.5 }}>Propuesta #{propuesta.id}</div>
-        <h2 style={{ color: NAVY, margin: "2px 0 4px", fontSize: 22 }}>{propuesta.cliente || "Cliente"}</h2>
+        <h2 style={{ color: NAVY, margin: "2px 0 4px", fontSize: 26, fontWeight: 400, letterSpacing: -0.4 }}>{propuesta.cliente || "Cliente"}</h2>
         <p style={{ color: "#78776f", fontSize: 13, margin: "0 0 10px" }}>Revisá la orden antes de enviarla — podés ajustar % o monto de cualquier fila.</p>
         <button
           onClick={async () => { const ok = await copiarTablaAlPortapapeles(); setCopiadoManualMsg(ok ? "✓ Copiado — pegalo donde quieras con Ctrl+V" : "No se pudo copiar en este navegador"); }}
@@ -459,7 +487,7 @@ function PaginaOrden({ token }) {
         </button>
         {copiadoManualMsg && <div style={{ fontSize: 11.5, color: copiadoManualMsg.startsWith("✓") ? "#3a7d44" : "#b23b3b", marginTop: -8, marginBottom: 12 }}>{copiadoManualMsg}</div>}
 
-        <div style={{ border: "1px solid #eae7dc", borderRadius: 10, overflow: "hidden", marginBottom: 20 }}>
+        <div style={{ border: "1px solid #EEEBE5", borderRadius: 18, overflow: "hidden", marginBottom: 20 }}>
           <div style={{ display: "grid", gridTemplateColumns: "56px 100px 1fr 100px", padding: "8px 14px", background: NAVY }}>
             <div style={{ fontSize: 10.5, fontWeight: 700, color: "#AEB9C9" }}>%</div>
             <div style={{ fontSize: 10.5, fontWeight: 700, color: "#AEB9C9" }}>ISIN</div>
@@ -2375,10 +2403,10 @@ export default function App() {
 
   if (!usuario) {
     return (
-      <div style={{ fontFamily: "Montserrat, sans-serif", background: CREAM, minHeight: "100vh", padding: 40, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div style={{ background: "#fff", borderRadius: 12, padding: "40px 44px", width: 440, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
-          <h2 style={{ color: NAVY, margin: "0 0 6px", fontSize: 20 }}>Automatizador de propuestas</h2>
-          <p style={{ color: "#78776f", fontSize: 13.5, margin: "0 0 26px" }}>Elegí quién sos para empezar. El asesor / RepCode se elige después, en la Portada — es opcional.</p>
+      <div style={{ fontFamily: "'Sora', sans-serif", background: CREAM, minHeight: "100vh", padding: 40, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ background: "#fff", borderRadius: RADIUS, padding: "44px 44px", width: 440, maxWidth: "100%", boxShadow: CARD_SHADOW }}>
+          <h2 style={{ color: NAVY, margin: "0 0 8px", fontSize: 24, fontWeight: 400, letterSpacing: -0.4 }}>Automatizador de propuestas</h2>
+          <p style={{ color: "#8D99AB", fontWeight: 300, fontSize: 13.5, lineHeight: 1.6, margin: "0 0 28px" }}>Elegí quién sos para empezar. El asesor / RepCode se elige después, en la Portada — es opcional.</p>
 
           <Field label="¿Quién sos?">
             <select style={inputStyle} value={usuario} onChange={(e) => setUsuario(e.target.value)}>
@@ -2440,7 +2468,7 @@ export default function App() {
             )}
           </div>
         ) : (
-          <div style={{ marginTop: 10, background: "#fbf9f5", border: "1px solid #eae7dc", borderRadius: 8, padding: 12 }}>
+          <div style={{ marginTop: 10, background: "#fbf9f5", border: "1px solid #EEEBE5", borderRadius: 16, padding: 12 }}>
             {donutDraft.map((it) => (
               <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, position: "relative" }}>
                 <div
@@ -2449,7 +2477,7 @@ export default function App() {
                   style={{ width: 20, height: 20, borderRadius: "50%", background: it.color, flexShrink: 0, cursor: "pointer", border: "1px solid rgba(0,0,0,0.15)" }}
                 />
                 {colorPickerAbiertoPara === it.id && (
-                  <div style={{ position: "absolute", top: 26, left: 0, zIndex: 20, background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 8, boxShadow: "0 2px 10px rgba(0,0,0,0.12)", display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
+                  <div style={{ position: "absolute", top: 26, left: 0, zIndex: 20, background: "#fff", border: "1px solid #EEEBE5", borderRadius: 16, padding: 8, boxShadow: "0 2px 10px rgba(0,0,0,0.12)", display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
                     {PALETA_DONUT.map((c) => (
                       <div
                         key={c}
@@ -2499,7 +2527,7 @@ export default function App() {
           <input style={inputStyle} value={descMarcaQuery} onChange={(e) => setDescMarcaQuery(e.target.value)} placeholder="Ej: MFS, BlackRock, Vontobel" />
         </Field>
         {descMarcaResultados.length > 0 && (
-          <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginTop: -8, marginBottom: 12, maxHeight: 140, overflowY: "auto" }}>
+          <div style={{ border: "1px solid #EEEBE5", borderRadius: 14, marginTop: -8, marginBottom: 12, maxHeight: 140, overflowY: "auto" }}>
             {descMarcaResultados.map((m) => (
               <div
                 key={m.id}
@@ -2543,10 +2571,10 @@ export default function App() {
           return (
             <div key={tipo} style={{ marginBottom: 16 }}>
               <div style={{ fontSize: 11.5, fontWeight: 700, color: NAVY, marginBottom: 6 }}>{TIPO_LABELS[tipo]} ({filas.length})</div>
-              <div style={{ overflowX: "auto", background: "#fff", border: "1px solid #eae7dc", borderRadius: 8 }}>
+              <div style={{ overflowX: "auto", background: "#F8F7F4", borderRadius: 20, padding: "0 8px 6px" }}>
                 <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11.5 }}>
                   <thead>
-                    <tr style={{ background: CREAM }}>
+                    <tr style={{ background: "transparent" }}>
                       <th style={{ padding: "5px 7px", textAlign: "left", whiteSpace: "nowrap" }}>Categoría</th>
                       {cols.map((c) => <th key={c.key} style={{ padding: "5px 7px", textAlign: "left", whiteSpace: "nowrap" }}>{c.label}</th>)}
                       <th></th>
@@ -2595,16 +2623,16 @@ export default function App() {
   }
 
   return (
-    <div style={{ fontFamily: "Montserrat, sans-serif", background: CREAM, minHeight: "100vh", display: "flex" }}>
-      <div style={{ width: 234, flexShrink: 0, background: NAVY, display: "flex", flexDirection: "column", padding: "26px 16px", minHeight: "100vh", boxSizing: "border-box" }}>
+    <div style={{ fontFamily: "'Sora', sans-serif", background: CREAM, minHeight: "100vh", display: "flex", gap: 16, padding: 16, boxSizing: "border-box", alignItems: "flex-start" }}>
+      <div style={{ width: 208, flexShrink: 0, background: "#fff", borderRadius: RADIUS, boxShadow: CARD_SHADOW, display: "flex", flexDirection: "column", padding: "28px 16px", position: "sticky", top: 16, height: "calc(100vh - 32px)", boxSizing: "border-box" }}>
         <div onClick={() => setVista("nueva")} style={{ display: "flex", flexDirection: "column", gap: 5, padding: "0 8px 26px 8px", cursor: "pointer" }} title="Ir al inicio">
           <svg width="82" height="21" viewBox="0 0 138 35" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M 4.00 34.64 Q 0.00 34.64 2.00 31.18 L 18.00 3.46 Q 20.00 0.00 22.00 3.46 L 38.00 31.18 Q 40.00 34.64 36.00 34.64 Z" fill="#D1DFEA" />
-            <rect x="46" y="0" width="12" height="34.64" rx="4" fill="#D1DFEA" />
-            <path d="M 68.00 0.00 Q 64.00 0.00 66.00 3.46 L 82.00 31.18 Q 84.00 34.64 86.00 31.18 L 102.00 3.46 Q 104.00 0.00 100.00 0.00 Z" fill="#D1DFEA" />
-            <path d="M 102.00 34.64 Q 98.00 34.64 100.00 31.18 L 116.00 3.46 Q 118.00 0.00 120.00 3.46 L 136.00 31.18 Q 138.00 34.64 134.00 34.64 Z" fill="#D1DFEA" />
+            <path d="M 4.00 34.64 Q 0.00 34.64 2.00 31.18 L 18.00 3.46 Q 20.00 0.00 22.00 3.46 L 38.00 31.18 Q 40.00 34.64 36.00 34.64 Z" fill="#16223A" />
+            <rect x="46" y="0" width="12" height="34.64" rx="4" fill="#16223A" />
+            <path d="M 68.00 0.00 Q 64.00 0.00 66.00 3.46 L 82.00 31.18 Q 84.00 34.64 86.00 31.18 L 102.00 3.46 Q 104.00 0.00 100.00 0.00 Z" fill="#16223A" />
+            <path d="M 102.00 34.64 Q 98.00 34.64 100.00 31.18 L 116.00 3.46 Q 118.00 0.00 120.00 3.46 L 136.00 31.18 Q 138.00 34.64 134.00 34.64 Z" fill="#16223A" />
           </svg>
-          <div style={{ color: "#D1DFEA", fontWeight: 400, fontSize: 13 }}>Asset</div>
+          <div style={{ color: "#7C8AA0", fontWeight: 300, fontSize: 12, letterSpacing: 1 }}>Asset</div>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
           {[
@@ -2616,27 +2644,27 @@ export default function App() {
               key={item.key}
               onClick={() => setVista(item.key)}
               style={{
-                display: "flex", alignItems: "center", gap: 10, padding: "10px 13px", borderRadius: 10,
-                background: vista === item.key ? "rgba(255,255,255,0.08)" : "transparent",
-                color: vista === item.key ? "#fff" : "#AEB9C9",
-                fontWeight: vista === item.key ? 600 : 500, fontSize: 13, border: "none", cursor: "pointer", textAlign: "left",
+                display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderRadius: 16,
+                background: vista === item.key ? NAVY : "transparent",
+                color: vista === item.key ? "#fff" : "#6C7A90",
+                fontWeight: vista === item.key ? 500 : 400, fontSize: 13, border: "none", cursor: "pointer", textAlign: "left",
               }}
             >
               {item.label}
             </button>
           ))}
         </div>
-        <div style={{ marginTop: "auto", padding: 13, borderRadius: 10, background: "rgba(255,255,255,0.06)" }}>
-          <div style={{ color: "#fff", fontSize: 12.5, fontWeight: 600 }}>{usuario}</div>
-          {asesorSel && <div style={{ color: "#8492A6", fontSize: 11, marginTop: 2 }}>{repcode} — {asesorSel.nombre}</div>}
+        <div style={{ marginTop: "auto", padding: "14px 16px", borderRadius: 18, background: "#F4F2EE" }}>
+          <div style={{ color: NAVY, fontSize: 12.5, fontWeight: 500 }}>{usuario}</div>
+          {asesorSel && <div style={{ color: "#8D99AB", fontSize: 11, marginTop: 2 }}>{repcode} — {asesorSel.nombre}</div>}
         </div>
       </div>
 
       <div style={{ flex: 1, minWidth: 0 }}>
 
       {vista === "biblioteca" ? (
-        <div style={{ padding: "28px 36px" }}>
-          <h3 style={{ color: NAVY, fontSize: 16, marginBottom: 8 }}>Biblioteca de fondos</h3>
+        <div style={{ background: "#fff", borderRadius: RADIUS, boxShadow: CARD_SHADOW, padding: "34px 32px", marginBottom: 16, minWidth: 0 }}>
+          <h3 style={{ color: NAVY, fontSize: 24, fontWeight: 400, letterSpacing: -0.4, margin: "0 0 8px" }}>Biblioteca de fondos</h3>
           <p style={{ fontSize: 12.5, color: "#78776f", marginBottom: 20 }}>Buscá un fondo para cargarle logo, descripción y factsheet — queda guardado para todas las próximas propuestas, no hay que repetirlo.</p>
 
           <div style={{ display: "flex", gap: 24, marginBottom: 34 }}>
@@ -2652,7 +2680,7 @@ export default function App() {
             </div>
 
             {bibliotecaSel && (
-              <div style={{ flex: 1, maxWidth: 480, background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 20 }}>
+              <div style={{ flex: 1, maxWidth: 480, background: "#fff", border: "1px solid #EEEBE5", borderRadius: 16, padding: 20 }}>
                 <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{bibliotecaSel.nombre}</div>
                 <div style={{ fontSize: 12, color: "#78776f", marginBottom: 16 }}>{bibliotecaSel.isin}</div>
 
@@ -2664,7 +2692,7 @@ export default function App() {
                   <input style={inputStyle} value={marcaFondoQuery} onChange={(e) => { setMarcaFondoQuery(e.target.value); setMarcaFondoAsignada(""); }} placeholder="Escribí el nombre de la marca" />
                 </Field>
                 {marcaFondoResultados.length > 0 && (
-                  <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginTop: -8, marginBottom: 14, maxHeight: 160, overflowY: "auto" }}>
+                  <div style={{ border: "1px solid #EEEBE5", borderRadius: 14, marginTop: -8, marginBottom: 14, maxHeight: 160, overflowY: "auto" }}>
                     {marcaFondoResultados.map((m) => (
                       <div key={m.id} onClick={() => asignarMarcaAFondo(m)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #f2f0e9" }}>
                         <img src={m.logo_url} alt="" style={{ height: 20, maxWidth: 70, objectFit: "contain" }} />
@@ -2695,7 +2723,7 @@ export default function App() {
           </div>
 
           <div style={{ borderTop: "1px solid #eae7dc", paddingTop: 26 }}>
-            <h3 style={{ color: NAVY, fontSize: 16, marginBottom: 8 }}>Marcas y logos</h3>
+            <h3 style={{ color: NAVY, fontSize: 24, fontWeight: 400, letterSpacing: -0.4, margin: "0 0 8px" }}>Marcas y logos</h3>
             <p style={{ fontSize: 12.5, color: "#78776f", marginBottom: 16 }}>
               Cada marca acá se puede asociar a varios fondos sin duplicar el archivo. Agrupa además todos los fondos por su logo real — un grupo con varios fondos que no son de la misma familia suele ser un error de carga.
             </p>
@@ -2706,7 +2734,7 @@ export default function App() {
               <>
                 <button onClick={() => setMostrarAgregarMarcas(false)} style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", marginBottom: 14, textDecoration: "underline" }}>Ocultar</button>
 
-                <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 14, marginBottom: 22, maxWidth: 680 }}>
+                <div style={{ background: "#fff", border: "1.5px dashed #D5D9E0", borderRadius: 20, padding: 14, marginBottom: 22, maxWidth: 680 }}>
                   <div style={{ fontSize: 12.5, fontWeight: 600, color: NAVY, marginBottom: 8 }}>Agregar un logo de marca que todavía no está cargado</div>
                   <div style={{ fontSize: 11.5, color: "#78776f", marginBottom: 10 }}>Para logos que ningún fondo tiene todavía (ej: uno que se perdió en la importación). Después se busca por este nombre al editar cualquier fondo.</div>
                   <div style={{ display: "grid", gridTemplateColumns: "180px 1fr auto", gap: 12, alignItems: "end" }}>
@@ -2723,14 +2751,14 @@ export default function App() {
                   {marcaMensajeNueva && <div style={{ marginTop: 8, fontSize: 12, color: marcaMensajeNueva.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{marcaMensajeNueva}</div>}
                 </div>
 
-                <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 14, marginBottom: 22, maxWidth: 680 }}>
+                <div style={{ background: "#fff", border: "1.5px dashed #D5D9E0", borderRadius: 20, padding: 14, marginBottom: 22, maxWidth: 680 }}>
                   <div style={{ fontSize: 12.5, fontWeight: 600, color: NAVY, marginBottom: 8 }}>Importar varias marcas a la vez</div>
                   <div style={{ fontSize: 11.5, color: "#78776f", marginBottom: 10 }}>Descomprimí el ZIP en una carpeta y seleccioná todas las imágenes juntas — el nombre de cada marca sale del nombre del archivo (editable antes de aplicar).</div>
                   <div style={{ marginBottom: 12 }}><FileInputButton accept="image/*" multiple onChange={(e) => handleMarcaImportFiles(e.target.files)} label="Elegir archivos" /></div>
 
                   {marcaImportEntradas.length > 0 && (
                     <>
-                      <div style={{ maxHeight: 320, overflowY: "auto", border: "1px solid #eae7dc", borderRadius: 6, marginBottom: 12 }}>
+                      <div style={{ maxHeight: 320, overflowY: "auto", border: "1px solid #EEEBE5", borderRadius: 14, marginBottom: 12 }}>
                         {marcaImportEntradas.map((e, i) => (
                           <div key={i} style={{ display: "grid", gridTemplateColumns: "40px 1fr auto", gap: 10, alignItems: "center", padding: "8px 10px", borderBottom: "1px solid #f2f0e9" }}>
                             <img src={URL.createObjectURL(e.file)} alt="" style={{ height: 28, maxWidth: 40, objectFit: "contain" }} />
@@ -2847,7 +2875,7 @@ export default function App() {
                                 placeholder={`Buscar por ISIN o nombre (ej: "${fila.marca.nombre.split(" ")[0]}")`}
                               />
                               {marcaAsocResultados.length > 0 && (
-                                <div style={{ marginTop: 8, maxHeight: 220, overflowY: "auto", border: "1px solid #eae7dc", borderRadius: 6 }}>
+                                <div style={{ marginTop: 8, maxHeight: 220, overflowY: "auto", border: "1px solid #EEEBE5", borderRadius: 14 }}>
                                   {marcaAsocResultados.map((f) => (
                                     <label key={f.isin} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 12.5, borderBottom: "1px solid #f2f0e9", cursor: "pointer" }}>
                                       <input type="checkbox" checked={!!marcaAsocSeleccionados[f.isin]} onChange={() => toggleFondoAsoc(f)} />
@@ -2883,9 +2911,9 @@ export default function App() {
           </div>
         </div>
       ) : vista === "registro" ? (
-        <div style={{ padding: "28px 36px" }}>
+        <div style={{ background: "#fff", borderRadius: RADIUS, boxShadow: CARD_SHADOW, padding: "34px 32px", marginBottom: 16, minWidth: 0 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
-            <h3 style={{ color: NAVY, fontSize: 16, margin: 0 }}>Registro de propuestas</h3>
+            <h3 style={{ color: NAVY, fontSize: 24, fontWeight: 400, letterSpacing: -0.4, margin: 0 }}>Registro de propuestas</h3>
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
               <input
                 style={{ ...inputStyle, width: 280 }}
@@ -2931,20 +2959,20 @@ export default function App() {
           {!registroCargando && registro.length === 0 && <div style={{ fontSize: 13, color: "#78776f" }}>Todavía no hay propuestas generadas.</div>}
           {!registroCargando && registro.length > 0 && registroFiltrado.length === 0 && <div style={{ fontSize: 13, color: "#78776f" }}>Ningún registro coincide con ese filtro.</div>}
           {!registroCargando && registroFiltrado.length > 0 && (
-            <table style={{ width: "100%", borderCollapse: "collapse", background: "#fff", fontSize: 13 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", background: "transparent", fontSize: 13 }}>
               <thead>
-                <tr style={{ background: NAVY, color: "#fff" }}>
+                <tr style={{ color: "#8D99AB", fontSize: 11, fontWeight: 500, letterSpacing: 0.3, borderBottom: "1px solid #ECE9E2" }}>
                   <th style={{ padding: "8px 10px", textAlign: "left" }}>
                     <input type="checkbox" checked={registroFiltrado.every((r) => registroSeleccionados[r.id])} onChange={() => toggleRegistroSeleccionarTodos(registroFiltrado.map((r) => r.id))} />
                   </th>
                   {["Fecha", "Tipo", "Cliente / Cuenta", "Hecha por", "Asesor", "Monto", "Status", "Archivos", ""].map((h) => (
-                    <th key={h} style={{ padding: "8px 10px", textAlign: "left" }}>{h}</th>
+                    <th key={h} style={{ padding: "12px 10px", textAlign: "left", fontWeight: 500 }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {registroFiltrado.map((r) => (
-                  <tr key={r.id} style={{ borderBottom: "1px solid #eae7dc", background: registroSeleccionados[r.id] ? "#fbf6ee" : "transparent" }}>
+                  <tr key={r.id} style={{ borderBottom: "1px solid #F0EDE6", background: registroSeleccionados[r.id] ? "#F4F2EE" : "transparent" }}>
                     <td style={{ padding: "8px 10px" }}>
                       <input type="checkbox" checked={!!registroSeleccionados[r.id]} onChange={() => toggleRegistroSeleccionado(r.id)} />
                     </td>
@@ -2977,30 +3005,25 @@ export default function App() {
           )}
         </div>
       ) : (
-      <div style={{ padding: "28px 36px" }}>
+      <div style={{ padding: "0 0 8px", minWidth: 0 }}>
         {editandoPropuestaId && (
           <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#EAF0F6", border: "1px solid #C9DCEA", borderRadius: 10, padding: "10px 14px", marginBottom: 18 }}>
             <span style={{ fontSize: 12.5, color: NAVY }}>✎ Editando una propuesta ya generada — al generar de nuevo, se actualiza esta misma (no crea una nueva).</span>
             <button onClick={() => window.location.reload()} style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", textDecoration: "underline", marginLeft: "auto" }}>Cancelar y empezar de cero</button>
           </div>
         )}
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 24 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 18, padding: "4px 2px" }}>
           {currentSteps.map((s, i) => (
             <div key={s} onClick={() => setStep(i)} style={{
-              display: "flex", alignItems: "center", gap: 7, padding: "7px 14px 7px 7px", borderRadius: 999, cursor: "pointer",
-              background: i === step ? TEAL : "#EDEAE2",
+              display: "flex", alignItems: "center", gap: 8, padding: "9px 18px", borderRadius: 999, cursor: "pointer",
+              background: i === step ? TEAL : "rgba(255,255,255,0.6)",
             }}>
-              <div style={{
-                width: 19, height: 19, borderRadius: "50%", fontSize: 10.5, fontWeight: 700,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                background: i === step ? NAVY : "#DEDAD0", color: i === step ? "#fff" : "#8B8A80",
-              }}>{i + 1}</div>
-              <div style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap", color: i === step ? "#fff" : "#8B8A80" }}>{s}</div>
+              <div style={{ fontSize: 12, fontWeight: i === step ? 500 : 400, whiteSpace: "nowrap", color: i === step ? "#fff" : "#8D99AB" }}>{s}</div>
             </div>
           ))}
         </div>
 
-        <div style={{ flex: 1, maxWidth: 760 }}>
+        <div style={{ flex: 1, maxWidth: 1180, minWidth: 0 }}>
           {stepName === "Portada" && (
             <Section title="Portada">
               <Field label="Tipo de documento">
@@ -3022,7 +3045,7 @@ export default function App() {
                 <input style={inputStyle} value={asesorQuery} onChange={(e) => { setAsesorQuery(e.target.value); setAsesorSel(null); setRepcode(""); }} placeholder="Buscar por RepCode o nombre, o escribir cualquier nombre" />
               </Field>
               {asesorResultados.length > 0 && !asesorSel && (
-                <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginTop: -8, marginBottom: 14, maxHeight: 180, overflowY: "auto" }}>
+                <div style={{ border: "1px solid #EEEBE5", borderRadius: 14, marginTop: -8, marginBottom: 14, maxHeight: 180, overflowY: "auto" }}>
                   {asesorResultados.map((a) => (
                     <div key={a.repcode} onClick={() => { setAsesorSel(a); setRepcode(a.repcode); setAsesorQuery(`${a.repcode} — ${a.nombre}`); setAsesorResultados([]); }}
                       style={{ padding: "8px 10px", fontSize: 13, cursor: "pointer", borderBottom: "1px solid #f2f0e9" }}>
@@ -3120,7 +3143,7 @@ export default function App() {
                   ))}
                 </div>
               </Field>
-              <div style={{ background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 16, fontSize: 13.5 }}>{RISK_TEXT[perfil]}</div>
+              <div style={{ background: "#fff", border: "1px solid #EEEBE5", borderRadius: 16, padding: 16, fontSize: 13.5 }}>{RISK_TEXT[perfil]}</div>
             </Section>
           )}
 
@@ -3163,7 +3186,7 @@ export default function App() {
                 const rendimiento = a.costo ? (((a.valor_actual - a.costo) / a.costo) * 100).toFixed(1) : "0.0";
                 const pct = totalRevisionPreview ? ((a.valor_actual / totalRevisionPreview) * 100).toFixed(1) : "0.0";
                 return (
-                  <div key={i} style={{ background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 12, marginBottom: 10 }}>
+                  <div key={i} style={{ background: "#fff", border: "1px solid #EEEBE5", borderRadius: 16, padding: 12, marginBottom: 10 }}>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr 1fr", gap: 10, marginBottom: 8 }}>
                       <MiniField label="ISIN">
                         <input style={miniInputStyle} value={a.isin} onChange={(e) => setCurrentAssets((prev) => prev.map((x, j) => j === i ? { ...x, isin: e.target.value } : x))} />
@@ -3282,6 +3305,7 @@ export default function App() {
                         onChange={(e) => renombrarEscenario(esc.id, e.target.value)}
                         onClick={() => !activo && cambiarEscenarioActivo(esc.id)}
                         readOnly={!activo}
+                        data-plain="true"
                         style={{
                           border: "none", background: "none", outline: "none", fontSize: 12.5, fontWeight: 600, cursor: activo ? "text" : "pointer",
                           color: activo ? "#fff" : NAVY, width: Math.max(esc.nombre.length * 7.5, 70),
@@ -3306,7 +3330,7 @@ export default function App() {
                 <input style={inputStyle} value={fondoQuery} onChange={(e) => setFondoQuery(e.target.value)} placeholder="Ej: IE00B3XXRP09 o Vanguard" />
               </Field>
               {fondoResultados.length > 0 && (
-                <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginBottom: 14, maxHeight: 200, overflowY: "auto" }}>
+                <div style={{ border: "1px solid #EEEBE5", borderRadius: 14, marginBottom: 14, maxHeight: 200, overflowY: "auto" }}>
                   {fondoResultados.map((f) => (
                     <div key={f.isin} onClick={() => addProposedAsset(f)} style={{ padding: "8px 10px", fontSize: 12.5, cursor: "pointer", borderBottom: "1px solid #f2f0e9" }}>
                       <b>{f.isin}</b> — {f.nombre} {f.uso_frecuente && <span style={{ color: TEAL }}>★ frecuente</span>}
@@ -3315,7 +3339,7 @@ export default function App() {
                 </div>
               )}
 
-              <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 12, marginBottom: 18 }}>
+              <div style={{ background: "#fff", border: "1.5px dashed #D5D9E0", borderRadius: 20, padding: 12, marginBottom: 18 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: NAVY, marginBottom: 4 }}>Cargar instrumentos desde Excel para esta propuesta</div>
                 <div style={{ fontSize: 11.5, color: "#78776f", marginBottom: 8 }}>
                   Subí el Excel base (Fondos / Acciones / Bonos) — se agregan directo a la tabla de abajo. Si el archivo trae % o Inversión (USD), se usan; si falta alguno de los dos, se calcula solo. No toca la Biblioteca de fondos.
@@ -3331,7 +3355,7 @@ export default function App() {
                 {propuestaImportResumen && <div style={{ marginTop: 8, fontSize: 11.5, color: propuestaImportResumen.startsWith("Error") || propuestaImportResumen.startsWith("No se") ? "#b23b3b" : "#3a7d44" }}>{propuestaImportResumen}</div>}
               </div>
 
-              <div style={{ background: "#fff", border: "1px dashed #d8d5cc", borderRadius: 8, padding: 12, marginBottom: 18 }}>
+              <div style={{ background: "#fff", border: "1.5px dashed #D5D9E0", borderRadius: 20, padding: 12, marginBottom: 18 }}>
                 <div style={{ fontSize: 12, color: "#78776f", marginBottom: 8 }}>¿No está en la biblioteca? Puede ser cualquier cosa — una acción, un bono, una alternativa. Se agrega acá y queda guardado para la próxima vez.</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8 }}>
                   <input style={miniInputStyle} placeholder="Nombre (ej: Apple Inc / AAPL)" value={nuevoActivoNombre} onChange={(e) => setNuevoActivoNombre(e.target.value)} />
@@ -3374,7 +3398,7 @@ export default function App() {
                     </div>
 
                     {columnasAbiertoPara === tipo && (
-                      <div style={{ background: "#fff", border: "1px solid #eae7dc", borderRadius: 6, padding: 10, marginBottom: 10, maxWidth: 340 }}>
+                      <div style={{ background: "#fff", border: "1px solid #EEEBE5", borderRadius: 14, padding: 10, marginBottom: 10, maxWidth: 340 }}>
                         <div style={{ fontSize: 11, fontWeight: 600, color: NAVY, marginBottom: 6 }}>Tildar para mostrar — flechas para ordenar</div>
                         {COLUMNAS_POR_TIPO[tipo].filter((c) => !c.fijo).map((c) => {
                           const idx = columnasConfig[tipo].indexOf(c.key);
@@ -3429,10 +3453,10 @@ export default function App() {
                       </div>
                     )}
 
-                    <div style={{ overflowX: "auto", background: "#fff", border: "1px solid #eae7dc", borderRadius: 8 }}>
+                    <div style={{ overflowX: "auto", background: "#F8F7F4", borderRadius: 20, padding: "0 8px 6px" }}>
                       <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12, tableLayout: "auto" }}>
                         <thead>
-                          <tr style={{ background: CREAM }}>
+                          <tr style={{ background: "transparent" }}>
                             <th style={{ padding: "5px 6px", textAlign: "left" }}>Categoría</th>
                             <th style={{ padding: "5px 6px", textAlign: "left" }}>%</th>
                             <th style={{ padding: "5px 6px", textAlign: "left" }}>Monto (USD)</th>
@@ -3528,7 +3552,7 @@ export default function App() {
                 </div>
               </Field>
               {descResultados.length > 0 && (
-                <div style={{ border: "1px solid #eae7dc", borderRadius: 6, marginBottom: 18, maxHeight: 480, overflowY: "auto" }}>
+                <div style={{ border: "1px solid #EEEBE5", borderRadius: 14, marginBottom: 18, maxHeight: 480, overflowY: "auto" }}>
                   {descResultados.map((f) => {
                     const abierto = descEditandoIsin === `${descCategoriaDestino}::${f.isin}`;
                     return (
@@ -3551,7 +3575,7 @@ export default function App() {
                   {descSeleccion[cat].map((f) => {
                     const abierto = descEditandoIsin === `${cat}::${f.isin}`;
                     return (
-                      <div key={f.isin} style={{ background: "#fff", border: "1px solid #eae7dc", borderRadius: 6, marginBottom: 6, overflow: "hidden" }}>
+                      <div key={f.isin} style={{ background: "#fff", border: "1px solid #EEEBE5", borderRadius: 14, marginBottom: 6, overflow: "hidden" }}>
                         <div onClick={() => abrirEdicionDesc(f, cat)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", cursor: "pointer" }}>
                           {f.logo_url ? <img src={f.logo_url} alt="" style={{ height: 24 }} /> : <div style={{ width: 24 }} />}
                           <div style={{ flex: 1 }}>
@@ -3588,7 +3612,7 @@ export default function App() {
 
           {error && <div style={{ marginTop: 14, color: "#b23b3b", fontSize: 13 }}>{error}</div>}
           {resultado && (
-            <div style={{ marginTop: 14, background: "#fff", border: "1px solid #eae7dc", borderRadius: 8, padding: 16 }}>
+            <div style={{ marginTop: 14, background: "#fff", border: "1px solid #EEEBE5", borderRadius: 16, padding: 16 }}>
               <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 8 }}>¡Listo!</div>
               <a href={resultado.pptx_url} target="_blank" rel="noreferrer" style={{ marginRight: 16, color: NAVY }}>Descargar PPTX</a>
               {resultado.pdf_url && <a href={resultado.pdf_url} target="_blank" rel="noreferrer" style={{ color: NAVY }}>Descargar PDF</a>}
