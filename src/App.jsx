@@ -306,6 +306,254 @@ function slugify(texto) {
 // se abre directo con el token de la URL (?orden=...), busca ESA propuesta
 // puntual y listo. Ver App() más abajo, que la renderiza en vez del resto
 // de la app cuando hay un token en la URL.
+// ---------- Catálogo de activos (para dealing y la página pública) ----------
+// Tabla `activos`: cada activo con TODOS los identificadores que se le
+// conozcan (isin, cusip, sedol, symbol). Se busca por cualquiera de ellos o
+// por nombre, y se va completando solo cada vez que alguien agrega un activo.
+const limpiarEspacios = (t) => String(t == null ? "" : t).replace(/\s+/g, " ").trim();
+const CLAVES_ID = ["isin", "cusip", "sedol", "symbol"];
+
+function tipoDeIdentificador(id) {
+  const c = limpiarEspacios(id).toUpperCase();
+  if (/^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(c)) return "isin";
+  if (/^[A-Z0-9]{8}[0-9]$/.test(c)) return "cusip";
+  if (/^[0-9BCDFGHJKLMNPQRSTVWXYZ]{6}[0-9]$/.test(c)) return "sedol";
+  return "symbol";
+}
+
+function inferirTipoActivo(id, nombre) {
+  const i = limpiarEspacios(id).toUpperCase();
+  const n = limpiarEspacios(nombre).toUpperCase();
+  if (/^[A-Z]+ \d{6}[CP]\d{8}$/.test(i)) return "opcion";
+  if (/\b(CPN|DUE|BILL|BOND|NOTE|NT)\b/.test(n)) return "bono";
+  if (/\b(ETF|FUND|FD)\b|ISHARES|SPDR|VANGUARD|PROSHARES/.test(n)) return "fondo";
+  return "accion";
+}
+
+function armarRegistroActivo({ nombre, ids, tipo, origen }) {
+  const reg = { nombre: limpiarEspacios(nombre) };
+  const lista = (ids || []).map((x) => limpiarEspacios(x).toUpperCase()).filter(Boolean);
+  lista.forEach((v) => { const k = tipoDeIdentificador(v); if (!reg[k]) reg[k] = v; });
+  // El CUSIP de un ISIN estadounidense/canadiense va adentro del propio ISIN
+  if (reg.isin && /^(US|CA)/.test(reg.isin) && !reg.cusip) reg.cusip = reg.isin.slice(2, 11);
+  reg.tipo = tipo || inferirTipoActivo(lista[0] || "", reg.nombre);
+  if (origen) reg.origen = origen;
+  return reg;
+}
+
+// Busca en el catálogo de activos y en la biblioteca de fondos a la vez.
+// Regla de cuándo mostrar la lista: con menos de 2 letras, nada; si hay hasta
+// 15 coincidencias, se muestran todas; si hay más de 15, solo se muestran
+// (las primeras 15) cuando ya se escribieron 4 letras o más — si no, un aviso
+// de que hay muchas y conviene seguir escribiendo.
+async function buscarCatalogoActivos(texto) {
+  const q = limpiarEspacios(texto);
+  if (q.length < 2) return { lista: [], hayMas: false, corto: true };
+  const patron = `%${q.replace(/[%,()"*\\]/g, " ")}%`;
+  const [ra, rf] = await Promise.all([
+    supabase.from("activos").select("nombre, isin, cusip, sedol, symbol, tipo")
+      .or(`nombre.ilike.${patron},isin.ilike.${patron},cusip.ilike.${patron},sedol.ilike.${patron},symbol.ilike.${patron}`).limit(16),
+    supabase.from("fondos").select("nombre, isin, tipo_instrumento")
+      .or(`nombre.ilike.${patron},isin.ilike.${patron}`).limit(16),
+  ]);
+  const vistos = new Set();
+  const todos = [];
+  const sumar = (r) => {
+    const idPpal = r.isin || r.symbol || r.cusip || r.sedol || "";
+    const claves = [r.isin, r.symbol, r.cusip, r.sedol].filter(Boolean).map((x) => String(x).toUpperCase());
+    const nom = limpiarEspacios(r.nombre).toUpperCase();
+    if (claves.some((c) => vistos.has("id:" + c)) || vistos.has("n:" + nom)) return;
+    claves.forEach((c) => vistos.add("id:" + c));
+    vistos.add("n:" + nom);
+    todos.push({ nombre: limpiarEspacios(r.nombre), id: idPpal, isin: r.isin || "", cusip: r.cusip || "", sedol: r.sedol || "", symbol: r.symbol || "", tipo: r.tipo || r.tipo_instrumento || inferirTipoActivo(idPpal, r.nombre) });
+  };
+  (ra.data || []).forEach(sumar);
+  (rf.data || []).forEach(sumar);
+  const ql = q.toLowerCase();
+  const puntaje = (x) => {
+    const ids = [x.isin, x.symbol, x.cusip, x.sedol].filter(Boolean).map((v) => v.toLowerCase());
+    if (ids.includes(ql)) return 0;
+    if (x.nombre.toLowerCase().startsWith(ql) || ids.some((v) => v.startsWith(ql))) return 1;
+    return 2;
+  };
+  todos.sort((x, y) => puntaje(x) - puntaje(y) || x.nombre.localeCompare(y.nombre));
+  const hayMas = todos.length > 15;
+  return { lista: (hayMas && q.length < 4) ? [] : todos.slice(0, 15), hayMas, corto: false };
+}
+
+// Guarda (o completa) un activo en el catálogo. Si ya existe uno con alguno
+// de los mismos identificadores —o con el mismo nombre— no duplica: le
+// agrega los identificadores que le faltaban. Nunca rompe la pantalla desde
+// la que se llama: el catálogo es un extra.
+async function guardarActivoEnCatalogo({ nombre, ids, tipo, origen }) {
+  try {
+    const reg = armarRegistroActivo({ nombre, ids, tipo, origen });
+    if (!reg.nombre || !CLAVES_ID.some((k) => reg[k])) return;
+    const filtros = CLAVES_ID.filter((k) => reg[k]).map((k) => `${k}.eq."${reg[k].replace(/"/g, "")}"`);
+    filtros.push(`nombre.ilike."${reg.nombre.replace(/[%"*\\_]/g, " ")}"`);
+    const { data: ex, error } = await supabase.from("activos").select("*").or(filtros.join(",")).limit(1);
+    if (error) return;
+    if (ex && ex.length) {
+      const parche = {};
+      CLAVES_ID.forEach((k) => { if (reg[k] && !ex[0][k]) parche[k] = reg[k]; });
+      if (Object.keys(parche).length) await supabase.from("activos").update({ ...parche, updated_at: new Date().toISOString() }).eq("id", ex[0].id);
+      return;
+    }
+    await supabase.from("activos").insert(reg);
+  } catch (e) { /* silencioso a propósito */ }
+}
+
+// Lee un Excel de dealing (ej: Trade Blotter con "Symbol/ID" y "Security Name")
+function registrosDeActivosDesdeWorkbook(wb) {
+  const reNombre = /^(security name|name|nombre|description|descripci[oó]n)$/i;
+  const reId = /^(symbol\/id|symbol|id|isin|cusip|sedol|ticker|identificador)$/i;
+  for (const hoja of wb.SheetNames) {
+    const matriz = XLSX.utils.sheet_to_json(wb.Sheets[hoja], { header: 1, defval: "" });
+    if (!matriz.length) continue;
+    const headers = matriz[0].map((h) => String(h).trim());
+    const iNombre = headers.findIndex((h) => reNombre.test(h));
+    const iIds = headers.map((h, i) => (reId.test(h) ? i : -1)).filter((i) => i >= 0);
+    if (iNombre < 0 || !iIds.length) continue;
+    const registros = [];
+    const vistos = new Set();
+    matriz.slice(1).forEach((fila) => {
+      const nombre = limpiarEspacios(fila[iNombre]);
+      const ids = iIds.map((i) => fila[i]).filter((v) => limpiarEspacios(v));
+      if (!nombre || !ids.length) return;
+      const reg = armarRegistroActivo({ nombre, ids, origen: "blotter" });
+      const clave = reg.nombre.toUpperCase();
+      if (vistos.has(clave)) return;
+      vistos.add(clave);
+      registros.push(reg);
+    });
+    return { registros };
+  }
+  return { error: "No encontré las columnas de nombre e identificador (por ejemplo 'Symbol/ID' y 'Security Name') en el archivo." };
+}
+
+async function insertarRegistrosEnCatalogo(registros) {
+  let nuevos = 0, existentes = 0, primerError = null;
+  for (let i = 0; i < registros.length; i += 100) {
+    const lote = registros.slice(i, i + 100);
+    const ya = new Set();
+    for (const k of CLAVES_ID) {
+      const valores = [...new Set(lote.map((r) => r[k]).filter(Boolean))];
+      if (!valores.length) continue;
+      const { data } = await supabase.from("activos").select(k).in(k, valores);
+      (data || []).forEach((d) => ya.add(`${k}:${d[k]}`));
+    }
+    const porInsertar = lote.filter((r) => !CLAVES_ID.some((k) => r[k] && ya.has(`${k}:${r[k]}`)));
+    existentes += lote.length - porInsertar.length;
+    if (!porInsertar.length) continue;
+    const { error } = await supabase.from("activos").insert(porInsertar);
+    if (!error) { nuevos += porInsertar.length; continue; }
+    // Si el lote falla (ej: un nombre repetido) se prueba de a uno
+    for (const r of porInsertar) {
+      const { error: e1 } = await supabase.from("activos").insert(r);
+      if (!e1) nuevos++;
+      else if (e1.code === "23505") existentes++;
+      else primerError = primerError || e1;
+    }
+  }
+  if (primerError && nuevos === 0) throw new Error(primerError.message + " — ¿corriste el SQL del catálogo en Supabase?");
+  return { nuevos, existentes };
+}
+
+// Campo de texto con lista de sugerencias del catálogo. La lista aparece
+// siguiendo la regla de buscarCatalogoActivos (no salta con 1 letra ni
+// vuelca cientos de resultados).
+function InputConSugerencias({ value, onChange, onElegir, placeholder, style, mono }) {
+  const [sug, setSug] = useState({ lista: [], hayMas: false, corto: true, abierto: false });
+  const seq = useRef(0);
+  useEffect(() => {
+    if (!sug.abierto) return;
+    const mi = ++seq.current;
+    const t = setTimeout(async () => {
+      const r = await buscarCatalogoActivos(value);
+      if (mi === seq.current) setSug((prev) => ({ ...prev, ...r }));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [value, sug.abierto]);
+  const meta = (t) => TIPO_META_ORDEN[t] || TIPO_META_ORDEN.fondo;
+  const mostrarAviso = sug.abierto && !sug.corto && sug.lista.length === 0;
+  return (
+    <div style={{ position: "relative", minWidth: 0 }}>
+      <input
+        value={value} placeholder={placeholder} autoComplete="off"
+        onChange={(e) => { onChange(e.target.value); setSug((prev) => ({ ...prev, abierto: true })); }}
+        onFocus={() => setSug((prev) => ({ ...prev, abierto: true }))}
+        onBlur={() => setTimeout(() => setSug((prev) => ({ ...prev, abierto: false })), 160)}
+        style={{ ...style, fontFamily: mono ? "monospace" : undefined }}
+      />
+      {sug.abierto && (sug.lista.length > 0 || mostrarAviso) && (
+        <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 40, marginTop: 4, width: 380, maxWidth: "88vw", maxHeight: 320, overflowY: "auto", background: "#fff", borderRadius: 16, boxShadow: "0 16px 36px -10px rgba(22,34,58,0.35)", padding: 6 }}>
+          {sug.lista.map((it, k) => (
+            <div key={k} onMouseDown={(e) => { e.preventDefault(); onElegir(it); setSug((prev) => ({ ...prev, abierto: false })); }}
+              style={{ padding: "9px 12px", borderRadius: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 10 }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "#F4F2EE")} onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, color: NAVY, fontWeight: 500, whiteSpace: "normal" }}>{it.nombre}</div>
+                <div style={{ fontSize: 10.5, color: "#8D99AB", fontFamily: "monospace", marginTop: 2 }}>{[it.isin, it.symbol, it.cusip, it.sedol].filter(Boolean).join(" · ")}</div>
+              </div>
+              <span style={{ fontSize: 9.5, padding: "2px 8px", borderRadius: 999, background: meta(it.tipo).color + "22", color: meta(it.tipo).color, whiteSpace: "nowrap" }}>{meta(it.tipo).label}</span>
+            </div>
+          ))}
+          {sug.hayMas && <div style={{ padding: "8px 12px", fontSize: 11, color: "#8D99AB" }}>{sug.lista.length ? "Mostrando 15 — seguí escribiendo para afinar." : "Hay más de 15 coincidencias — seguí escribiendo para ver la lista."}</div>}
+          {mostrarAviso && !sug.hayMas && limpiarEspacios(value).length >= 3 && <div style={{ padding: "8px 12px", fontSize: 11, color: "#8D99AB" }}>No está en el catálogo. Si lo usás, queda guardado para la próxima.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Solo para MOSTRAR en la página pública (colores/etiquetas por tipo) — no
+// entra en la tabla que se copia ni en el mail para dealing.
+const TIPO_META_ORDEN = {
+  fondo: { label: "Fondo", color: "#4F8A8B" },
+  fondo_distributivo: { label: "Fondo distributivo", color: "#3D6FB6" },
+  accion: { label: "Acción", color: "#A9762B" },
+  bono: { label: "Bono", color: "#6B4FA0" },
+  opcion: { label: "Opción", color: "#B0594F" },
+  cash: { label: "Cash", color: "#8D99AB" },
+};
+const ORDEN_TIPOS = ["fondo", "fondo_distributivo", "accion", "bono", "opcion", "cash"];
+const TIPOS_EDITABLES = ["fondo", "fondo_distributivo", "accion", "bono", "opcion"];
+// Propuestas viejas no guardaron si un instrumento era fondo o acción: si el
+// código no tiene forma de ISIN (12 caracteres), es un ticker -> acción.
+const parecEsISIN = (c) => /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(String(c || "").replace(/\s/g, ""));
+const fmtUsd = (n) => Math.round(Number(n) || 0).toLocaleString("es-AR");
+
+// Qué cambió entre dos versiones de la orden: montos/porcentajes, activos
+// reemplazados, filas agregadas y filas quitadas.
+function diffOrden(antes, despues) {
+  const out = [];
+  const porId = new Map((antes || []).map((x) => [x.id, x]));
+  const idsDespues = new Set((despues || []).map((x) => x.id));
+  (despues || []).forEach((d) => {
+    const a = porId.get(d.id);
+    if (!a) { out.push({ clase: "agregado", id: d.id, nombre: d.nombre, isin: d.isin, pct: d.pct, monto: d.monto }); return; }
+    const cambioActivo = limpiarEspacios(a.isin) !== limpiarEspacios(d.isin) || limpiarEspacios(a.nombre) !== limpiarEspacios(d.nombre);
+    const cambioNum = Math.abs((Number(a.monto) || 0) - (Number(d.monto) || 0)) >= 1 || Math.abs((Number(a.pct) || 0) - (Number(d.pct) || 0)) >= 0.05;
+    const cambioTipo = (a.tipo || "") !== (d.tipo || "");
+    if (cambioActivo || cambioNum || cambioTipo) {
+      out.push({ clase: cambioActivo ? "reemplazo" : "cambio", id: d.id, nombre: d.nombre, isin: d.isin, nombreAntes: a.nombre, isinAntes: a.isin, pctAntes: a.pct, pctDespues: d.pct, montoAntes: a.monto, montoDespues: d.monto, tipoAntes: a.tipo, tipoDespues: d.tipo });
+    }
+  });
+  (antes || []).forEach((a) => {
+    if (!idsDespues.has(a.id)) out.push({ clase: "quitado", id: a.id, nombre: a.nombre, isin: a.isin, pct: a.pct, monto: a.monto });
+  });
+  return out;
+}
+const lineaDiff = (x) => {
+  if (x.clase === "agregado") return `+ Agregó ${x.nombre} (${x.isin}): ${x.pct}% · USD ${fmtUsd(x.monto)}`;
+  if (x.clase === "quitado") return `– Quitó ${x.nombre} (${x.isin}): ${x.pct}% · USD ${fmtUsd(x.monto)}`;
+  const num = `${x.pctAntes}% → ${x.pctDespues}% (USD ${fmtUsd(x.montoAntes)} → ${fmtUsd(x.montoDespues)})`;
+  const tipo = x.tipoAntes !== x.tipoDespues ? ` · tipo: ${(TIPO_META_ORDEN[x.tipoAntes] || {}).label} → ${(TIPO_META_ORDEN[x.tipoDespues] || {}).label}` : "";
+  if (x.clase === "reemplazo") return `↔ Reemplazó ${x.nombreAntes} (${x.isinAntes}) por ${x.nombre} (${x.isin}): ${num}${tipo}`;
+  return `• ${x.nombre}: ${num}${tipo}`;
+};
+const textoDiff = (dif) => dif.map(lineaDiff).join("\n");
+
 function PaginaOrden({ token }) {
   const [cargando, setCargando] = useState(true);
   const [propuesta, setPropuesta] = useState(null);
@@ -349,14 +597,17 @@ function PaginaOrden({ token }) {
           }];
       const lista = bundlesCfg.map((b, i) => {
         const filas = [];
-        const agregar = (f) => filas.push({ id: `${f.isin || f.nombre}#${filas.length}`, isin: f.isin || "—", nombre: f.nombre, pct: f.pct || 0, monto: f.monto || 0 });
-        (b.bonos_propuesto || []).forEach(agregar);
-        (b.categorias_propuesto || []).forEach((cat) => (cat.fondos || []).forEach(agregar));
-        (b.fondos_distributivos_propuesto || []).forEach(agregar);
+        const agregar = (f, tipoFijo) => filas.push({
+          id: `${f.isin || f.nombre}#${filas.length}`, isin: f.isin || "—", nombre: f.nombre, pct: f.pct || 0, monto: f.monto || 0,
+          tipo: tipoFijo || f.tipo_instrumento || (parecEsISIN(f.isin) ? "fondo" : "accion"),
+        });
+        (b.bonos_propuesto || []).forEach((f) => agregar(f, "bono"));
+        (b.categorias_propuesto || []).forEach((cat) => (cat.fondos || []).forEach((f) => agregar(f)));
+        (b.fondos_distributivos_propuesto || []).forEach((f) => agregar(f, "fondo_distributivo"));
         const montoTot = b.monto_total || 0;
         const cashMonto = b.cash_monto || 0;
-        filas.push({ id: "cash", isin: "—", nombre: "Cash", pct: montoTot ? +((cashMonto / montoTot) * 100).toFixed(1) : 0, monto: cashMonto });
-        return { nombre: b.nombre || `Estrategia ${i + 1}`, items: filas, montoTotal: montoTot };
+        filas.push({ id: "cash", isin: "—", nombre: "Cash", pct: montoTot ? +((cashMonto / montoTot) * 100).toFixed(1) : 0, monto: cashMonto, tipo: "cash" });
+        return { nombre: b.nombre || `Estrategia ${i + 1}`, items: filas, montoTotal: montoTot, original: filas.map((x) => ({ ...x })), guardado: null, notifId: null };
       });
       setEstrategias(lista);
       setCargando(false);
@@ -372,9 +623,97 @@ function PaginaOrden({ token }) {
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, monto, pct: montoTotal ? +((monto / montoTotal) * 100).toFixed(1) : 0 } : it)));
   }
 
+  function actualizarCampo(id, campo, valor) {
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, [campo]: valor } : it)));
+  }
+  // Elegir un activo de la lista de sugerencias: completa ID, nombre y tipo
+  function elegirActivo(id, a) {
+    const tipo = TIPOS_EDITABLES.includes(a.tipo) ? a.tipo : "accion";
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, isin: a.id || it.isin, nombre: a.nombre, tipo } : it)));
+  }
+  // Las filas nuevas se insertan antes del Cash (que siempre queda al final)
+  function agregarFila() {
+    const nueva = { id: `nuevo_${Date.now()}`, isin: "", nombre: "", tipo: "fondo", pct: 0, monto: 0 };
+    setItems((prev) => [...prev.filter((x) => x.tipo !== "cash"), nueva, ...prev.filter((x) => x.tipo === "cash")]);
+  }
+  function quitarFila(id) {
+    setItems((prev) => prev.filter((x) => x.id !== id));
+  }
+
   const sumaMontos = items.reduce((s, it) => s + (Number(it.monto) || 0), 0);
   const sumaPct = items.reduce((s, it) => s + (Number(it.pct) || 0), 0);
   const coincide = Math.abs(sumaMontos - montoTotal) < 1;
+
+  // Versión original de la propuesta vs. la última que el asesor guardó.
+  // "cambiosSinGuardar": editó la tabla y todavía no apretó Guardar (en ese
+  // estado no se puede copiar ni enviar). "modificada": lo guardado difiere
+  // de la propuesta original — el equipo de AIVA ya fue avisado.
+  const original = estrategiaActiva.original || items;
+  const ordenVigente = estrategiaActiva.guardado || original;
+  const cambiosSinGuardar = diffOrden(ordenVigente, items).length > 0;
+  const diffVsOriginal = diffOrden(original, ordenVigente);
+  const modificada = diffVsOriginal.length > 0;
+  const filasCambiadas = new Map(diffOrden(original, items).map((x) => [x.id, x]));
+
+  const totalesPorTipo = ORDEN_TIPOS.map((t) => {
+    const f = items.filter((it) => it.tipo === t);
+    return { tipo: t, pct: f.reduce((a, it) => a + (Number(it.pct) || 0), 0), monto: f.reduce((a, it) => a + (Number(it.monto) || 0), 0), n: f.length };
+  }).filter((g) => g.n > 0);
+
+  // Deja (o actualiza) el aviso para el equipo de AIVA en Registro: una sola
+  // tarjeta por estrategia, con el antes → después de cada fila que cambió.
+  async function registrarAviso(titulo, dif) {
+    const texto = `${titulo}${hayVarias ? ` — ${estrategiaActiva.nombre}` : ""}\n${textoDiff(dif)}`;
+    if (estrategiaActiva.notifId) {
+      const { error: e1 } = await supabase.from("solicitudes_cambio").update({ comentario: texto, atendida: false, quien: quien.trim() || null }).eq("id", estrategiaActiva.notifId);
+      if (e1) throw e1;
+      return estrategiaActiva.notifId;
+    }
+    const { data: ins, error: e2 } = await supabase.from("solicitudes_cambio").insert({
+      propuesta_id: propuesta.id, comentario: texto, quien: quien.trim() || null,
+    }).select("id").single();
+    if (e2) throw e2;
+    return ins.id;
+  }
+
+  async function guardarCambios() {
+    if (!coincide) { setError("Para guardar, el total tiene que coincidir con el monto total."); return; }
+    const incompleta = items.find((x) => x.tipo !== "cash" && (!limpiarEspacios(x.isin) || !limpiarEspacios(x.nombre)));
+    if (incompleta) { setError("Completá el ID y el nombre de cada activo (o quitá la fila vacía) antes de guardar."); return; }
+    const idsOriginales = new Set(original.map((x) => x.id));
+    const sinMonto = items.find((x) => x.tipo !== "cash" && !idsOriginales.has(x.id) && !(Number(x.monto) > 0));
+    if (sinMonto) { setError(`"${limpiarEspacios(sinMonto.nombre)}" tiene que tener un % o monto mayor a 0 (o quitá la fila).`); return; }
+    setEnviando(true);
+    setError("");
+    try {
+      const clon = items.map((x) => ({ ...x, isin: x.tipo === "cash" ? x.isin : limpiarEspacios(x.isin).toUpperCase(), nombre: limpiarEspacios(x.nombre) }));
+      const dif = diffOrden(original, clon);
+      let notifId = estrategiaActiva.notifId;
+      if (dif.length === 0) {
+        // volvió exactamente a la propuesta original
+        if (notifId) await supabase.from("solicitudes_cambio").update({ comentario: `↩ El asesor volvió a la orden original (sin modificaciones)${hayVarias ? ` — ${estrategiaActiva.nombre}` : ""}`, atendida: true }).eq("id", notifId);
+        setEstrategias((prev) => prev.map((e, i) => (i === idxEstrategia ? { ...e, guardado: null } : e)));
+      } else {
+        notifId = await registrarAviso("✎ Orden modificada por el asesor (todavía no enviada)", dif);
+        // Los activos agregados o reemplazados quedan en el catálogo: la
+        // próxima vez que alguien escriba ese ID o nombre se autocompleta.
+        for (const d of dif.filter((x) => x.clase === "agregado" || x.clase === "reemplazo")) {
+          const fila = clon.find((x) => x.id === d.id);
+          if (fila) await guardarActivoEnCatalogo({ nombre: fila.nombre, ids: [fila.isin], tipo: fila.tipo, origen: "asesor_web" });
+        }
+        setEstrategias((prev) => prev.map((e, i) => (i === idxEstrategia ? { ...e, items: clon, guardado: clon, notifId } : e)));
+      }
+    } catch (e) {
+      setError("No se pudieron guardar los cambios: " + (e.message || e));
+    } finally {
+      setEnviando(false);
+    }
+  }
+
+  function descartarCambios() {
+    setItems(ordenVigente.map((x) => ({ ...x })));
+    setError("");
+  }
 
   function construirCuerpoMail() {
     // "|" en vez de tabs — algunos clientes de mail (Gmail en particular)
@@ -431,12 +770,25 @@ function PaginaOrden({ token }) {
   }
 
   async function enviarOrden() {
-    if (!coincide) return;
+    if (!coincide || cambiosSinGuardar) return;
     setEnviando(true);
     setError("");
     try {
-      const { error: err } = await supabase.from("propuestas").update({ status: "confirmada" }).eq("id", propuesta.id);
+      // Queda guardada la orden exacta que se envió (y la original, si el
+      // asesor la modificó) dentro de la propuesta — se lee la config fresca
+      // para no pisar nada que el equipo haya tocado mientras tanto.
+      const { data: fresca } = await supabase.from("propuestas").select("config").eq("id", propuesta.id).single();
+      const cfg = (fresca && fresca.config) || propuesta.config || {};
+      const resumen = (lista) => lista.map((x) => ({ isin: x.isin, nombre: x.nombre, tipo: x.tipo, pct: x.pct, monto: x.monto }));
+      const ordenFinal = {
+        fecha: new Date().toISOString(), estrategia: estrategiaActiva.nombre, modificada,
+        orden: resumen(ordenVigente), ...(modificada ? { original: resumen(original) } : {}),
+      };
+      const { error: err } = await supabase.from("propuestas").update({
+        status: "confirmada", config: { ...cfg, ordenes_confirmadas: [...(cfg.ordenes_confirmadas || []), ordenFinal] },
+      }).eq("id", propuesta.id);
       if (err) throw err;
+      if (modificada) await registrarAviso("📨 Orden ENVIADA a dealing con modificaciones del asesor", diffVsOriginal);
       const copiadoConFormato = await copiarTablaAlPortapapeles();
       const asunto = encodeURIComponent(`Orden de inversión — ${propuesta.cliente || ""} (Propuesta #${propuesta.id}${hayVarias ? ` · ${estrategiaActiva.nombre}` : ""})`);
       const cuerpo = encodeURIComponent(
@@ -449,7 +801,9 @@ function PaginaOrden({ token }) {
         tipo: "orden",
         mensaje: copiadoConFormato
           ? "Se marcó la propuesta como confirmada. Se abrió tu cliente de mail y copiamos la orden con formato de tabla — pegala ahí (Ctrl+V o Cmd+V) antes de enviar."
-          : "Se marcó la propuesta como confirmada. Se abrió tu cliente de mail con la orden lista para enviar — solo falta que le des Enviar ahí.",
+            + (modificada ? " El equipo de AIVA ya fue avisado de las modificaciones que hiciste." : "")
+          : "Se marcó la propuesta como confirmada. Se abrió tu cliente de mail con la orden lista para enviar — solo falta que le des Enviar ahí."
+            + (modificada ? " El equipo de AIVA ya fue avisado de las modificaciones que hiciste." : ""),
       });
     } catch (e) {
       setError("No se pudo confirmar: " + (e.message || e));
@@ -460,11 +814,12 @@ function PaginaOrden({ token }) {
 
   async function solicitarCambio() {
     if (!comentario.trim()) { setError("Contanos qué querés ajustar antes de enviar."); return; }
+    if (cambiosSinGuardar) { setError("Tenés cambios sin guardar en la tabla — guardalos o descartalos antes de pedir un cambio."); return; }
     setEnviando(true);
     setError("");
     try {
       const { error: err } = await supabase.from("solicitudes_cambio").insert({
-        propuesta_id: propuesta.id, comentario: (hayVarias ? `[${estrategiaActiva.nombre}] ` : "") + comentario.trim(), quien: quien.trim() || null,
+        propuesta_id: propuesta.id, comentario: (hayVarias ? `[${estrategiaActiva.nombre}] ` : "") + comentario.trim() + (modificada ? `\n\nAdemás modificó la tabla:\n${textoDiff(diffVsOriginal)}` : ""), quien: quien.trim() || null,
       });
       if (err) throw err;
       setResultado({ tipo: "cambio", mensaje: "Listo — le avisamos al equipo de AIVA con tu pedido. Te van a contactar con la propuesta ajustada." });
@@ -503,7 +858,7 @@ function PaginaOrden({ token }) {
       <div style={cardStyle}>
         <div style={{ fontSize: 12, fontWeight: 700, color: TEAL, textTransform: "uppercase", letterSpacing: 0.5 }}>Propuesta #{propuesta.id}</div>
         <h2 style={{ color: NAVY, margin: "2px 0 4px", fontSize: 26, fontWeight: 400, letterSpacing: -0.4 }}>{propuesta.cliente || "Cliente"}</h2>
-        <p style={{ color: "#78776f", fontSize: 13, margin: "0 0 10px" }}>Revisá la orden antes de enviarla — podés ajustar % o monto de cualquier fila.</p>
+        <p style={{ color: "#78776f", fontSize: 13, margin: "0 0 10px" }}>Revisá la orden antes de enviarla. Podés ajustar % o monto de cualquier fila: después apretá <b>Guardar cambios</b> (el equipo de AIVA recibe el aviso) y recién ahí copiar la tabla o enviar la orden.</p>
         {hayVarias && (
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 11.5, color: "#8D99AB", marginBottom: 8 }}>Esta propuesta tiene {estrategias.length} estrategias — elegí cuál querés confirmar o ajustar:</div>
@@ -515,29 +870,71 @@ function PaginaOrden({ token }) {
           </div>
         )}
         <button
-          onClick={async () => { const ok = await copiarTablaAlPortapapeles(); setCopiadoManualMsg(ok ? "✓ Copiado — pegalo donde quieras con Ctrl+V" : "No se pudo copiar en este navegador"); }}
+          onClick={async () => { if (cambiosSinGuardar) { setCopiadoManualMsg("Guardá los cambios antes de copiar la tabla"); return; } const ok = await copiarTablaAlPortapapeles(); setCopiadoManualMsg(ok ? "✓ Copiado — pegalo donde quieras con Ctrl+V" : "No se pudo copiar en este navegador"); }}
           style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", padding: 0, marginBottom: 12, textDecoration: "underline" }}
         >
           Copiar tabla al portapapeles
         </button>
         {copiadoManualMsg && <div style={{ fontSize: 11.5, color: copiadoManualMsg.startsWith("✓") ? "#3a7d44" : "#b23b3b", marginTop: -8, marginBottom: 12 }}>{copiadoManualMsg}</div>}
 
-        <div style={{ border: "1px solid #EEEBE5", borderRadius: 18, overflow: "hidden", marginBottom: 20 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "56px 100px 1fr 100px", padding: "8px 14px", background: NAVY }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+          {totalesPorTipo.map((g) => {
+            const m = TIPO_META_ORDEN[g.tipo];
+            return (
+              <div key={g.tipo} style={{ display: "flex", alignItems: "center", gap: 7, padding: "7px 13px", borderRadius: 999, background: m.color + "1A", fontSize: 11.5, color: NAVY }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: m.color }} />
+                <span style={{ fontWeight: 500 }}>{m.label}</span>
+                <span style={{ color: "#6C7A90" }}>{g.pct.toFixed(1)}% · USD {fmtUsd(g.monto)}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ border: "1px solid #EEEBE5", borderRadius: 18, marginBottom: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "56px 122px 1fr 100px 26px", gap: 6, padding: "8px 14px", background: NAVY, borderRadius: "18px 18px 0 0" }}>
             <div style={{ fontSize: 10.5, fontWeight: 700, color: "#AEB9C9" }}>%</div>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#AEB9C9" }}>ISIN</div>
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: "#AEB9C9" }}>ISIN / ID</div>
             <div style={{ fontSize: 10.5, fontWeight: 700, color: "#AEB9C9" }}>Activo</div>
             <div style={{ fontSize: 10.5, fontWeight: 700, color: "#AEB9C9", textAlign: "right" }}>Monto (USD)</div>
+            <div />
           </div>
-          {items.map((it, i) => (
-            <div key={it.id} style={{ display: "grid", gridTemplateColumns: "56px 100px 1fr 100px", padding: "7px 14px", alignItems: "center", background: i % 2 ? "#FBFAF7" : "#fff", borderTop: "1px solid #f2f0e9" }}>
-              <input type="number" onFocus={(e) => e.target.select()} value={it.pct} onChange={(e) => actualizarPct(it.id, e.target.value)} style={{ width: 42, padding: "4px 5px", borderRadius: 5, border: "1px solid #D8D5CC", fontSize: 12.5 }} />
-              <div style={{ fontSize: 11, color: "#78776f", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.isin}</div>
-              <div style={{ fontSize: 12.5, color: NAVY }}>{it.nombre}</div>
-              <input type="number" onFocus={(e) => e.target.select()} value={it.monto} onChange={(e) => actualizarMonto(it.id, e.target.value)} style={{ width: 90, padding: "4px 5px", borderRadius: 5, border: "1px solid #D8D5CC", fontSize: 12.5, textAlign: "right" }} />
-            </div>
-          ))}
-          <div style={{ display: "grid", gridTemplateColumns: "56px 100px 1fr 100px", padding: "10px 14px", alignItems: "center", background: coincide ? "#EAF1EE" : "#FBEAEA" }}>
+          {items.map((it, i) => {
+            const meta = TIPO_META_ORDEN[it.tipo] || TIPO_META_ORDEN.fondo;
+            const cambio = filasCambiadas.get(it.id);
+            const esCash = it.tipo === "cash";
+            return (
+              <div key={it.id} style={{ display: "grid", gridTemplateColumns: "56px 122px 1fr 100px 26px", gap: 6, padding: "7px 14px", alignItems: "start", background: cambio ? "#FBF3E4" : (i % 2 ? "#FBFAF7" : "#fff"), borderTop: "1px solid #f2f0e9", boxShadow: `inset 4px 0 0 ${meta.color}` }}>
+                <input type="number" onFocus={(e) => e.target.select()} value={it.pct} onChange={(e) => actualizarPct(it.id, e.target.value)} style={{ width: 46, padding: "4px 5px", fontSize: 12.5 }} />
+                {esCash
+                  ? <div style={{ fontSize: 11, color: "#78776f", fontFamily: "monospace", paddingTop: 9 }}>{it.isin}</div>
+                  : <InputConSugerencias value={it.isin} placeholder="ISIN / ticker" mono
+                      onChange={(v) => actualizarCampo(it.id, "isin", v)} onElegir={(a) => elegirActivo(it.id, a)}
+                      style={{ width: "100%", boxSizing: "border-box", padding: "4px 8px", fontSize: 11.5, minHeight: 34 }} />}
+                <div style={{ minWidth: 0 }}>
+                  {esCash
+                    ? <div style={{ fontSize: 12.5, color: NAVY, paddingTop: 8 }}>{it.nombre}</div>
+                    : <InputConSugerencias value={it.nombre} placeholder="Nombre del activo (escribí para buscar)"
+                        onChange={(v) => actualizarCampo(it.id, "nombre", v)} onElegir={(a) => elegirActivo(it.id, a)}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "4px 10px", fontSize: 12.5, minHeight: 34 }} />}
+                  <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 5 }}>
+                    {esCash
+                      ? <span style={{ fontSize: 9.5, fontWeight: 500, padding: "2px 8px", borderRadius: 999, background: meta.color + "22", color: meta.color }}>{meta.label}</span>
+                      : <select value={it.tipo} onChange={(e) => actualizarCampo(it.id, "tipo", e.target.value)} style={{ fontSize: 10, padding: "2px 8px", minHeight: 24, borderRadius: 999, background: meta.color + "22", color: meta.color, fontWeight: 500 }}>
+                          {TIPOS_EDITABLES.map((t) => <option key={t} value={t}>{TIPO_META_ORDEN[t].label}</option>)}
+                        </select>}
+                    {cambio && cambio.clase === "agregado" && <span style={{ fontSize: 10.5, color: "#A9762B" }}>nuevo</span>}
+                    {cambio && cambio.clase === "reemplazo" && <span style={{ fontSize: 10.5, color: "#A9762B" }}>antes: {cambio.nombreAntes} ({cambio.isinAntes})</span>}
+                    {cambio && cambio.clase !== "agregado" && <span style={{ fontSize: 10.5, color: "#A9762B" }}>antes: {cambio.pctAntes}% · USD {fmtUsd(cambio.montoAntes)}</span>}
+                  </div>
+                </div>
+                <input type="number" onFocus={(e) => e.target.select()} value={it.monto} onChange={(e) => actualizarMonto(it.id, e.target.value)} style={{ width: 92, padding: "4px 5px", fontSize: 12.5, textAlign: "right" }} />
+                {esCash
+                  ? <div />
+                  : <button onClick={() => quitarFila(it.id)} title="Quitar este activo" style={{ border: "none", background: "transparent", color: "#B0594F", fontSize: 15, cursor: "pointer", padding: 0, minHeight: 34, width: 26 }}>✕</button>}
+              </div>
+            );
+          })}
+          <div style={{ display: "grid", gridTemplateColumns: "56px 122px 1fr 100px 26px", gap: 6, padding: "10px 14px", alignItems: "center", background: coincide ? "#EAF1EE" : "#FBEAEA", borderRadius: "0 0 18px 18px" }}>
             <div style={{ fontSize: 11.5, fontWeight: 700, color: coincide ? "#3E7D5E" : "#b23b3b" }}>{sumaPct.toFixed(0)}%</div>
             <div />
             <div style={{ fontSize: 11, color: coincide ? "#3E7D5E" : "#b23b3b" }}>
@@ -546,8 +943,27 @@ function PaginaOrden({ token }) {
               )}
             </div>
             <div style={{ fontSize: 12.5, fontWeight: 700, color: coincide ? "#3E7D5E" : "#b23b3b", textAlign: "right" }}>{Math.round(sumaMontos).toLocaleString("es-AR")}</div>
+            <div />
           </div>
         </div>
+        <button onClick={agregarFila} style={{ border: "1.5px dashed #C9CFD8", background: "transparent", color: TEAL, fontSize: 12.5, cursor: "pointer", minHeight: 40, padding: "0 18px", marginBottom: 16 }}>+ Agregar activo</button>
+
+        {cambiosSinGuardar && (
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, background: "#FBF3E4", borderRadius: 16, padding: "12px 16px", marginBottom: 18 }}>
+            <div style={{ flex: "1 1 260px", fontSize: 12.5, color: "#7A5A1E" }}>
+              Tenés cambios sin guardar. Guardalos para poder copiar la tabla y enviar la orden.
+              <div style={{ fontSize: 11.5, marginTop: 6, whiteSpace: "pre-line", lineHeight: 1.6, color: "#8A6A2E" }}>{textoDiff(diffOrden(ordenVigente, items))}</div>
+            </div>
+            <button onClick={descartarCambios} style={{ border: "none", background: "transparent", color: "#7A5A1E", fontSize: 12.5, cursor: "pointer", minHeight: 40, padding: "0 12px" }}>Descartar</button>
+            <button onClick={guardarCambios} disabled={enviando || !coincide} style={{ border: "none", background: "#A9762B", color: "#fff", fontSize: 12.5, fontWeight: 500, cursor: "pointer", minHeight: 40, padding: "0 20px" }}>{enviando ? "…" : "Guardar cambios"}</button>
+          </div>
+        )}
+        {!cambiosSinGuardar && modificada && (
+          <div style={{ background: "#EAF0F6", borderRadius: 16, padding: "14px 16px", marginBottom: 18 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 500, color: NAVY, marginBottom: 6 }}>✎ Orden modificada respecto a la propuesta original — el equipo de AIVA ya fue avisado.</div>
+            <div style={{ fontSize: 11.5, color: "#6C7A90", whiteSpace: "pre-line", lineHeight: 1.6 }}>{textoDiff(diffVsOriginal)}</div>
+          </div>
+        )}
 
         <div style={{ marginBottom: 18, paddingTop: 14, borderTop: "1px solid #eae7dc" }}>
           <div style={{ fontSize: 12.5, color: "#5b5b55", marginBottom: 6 }}>¿Preferís pedir un cambio en vez de enviar la orden?</div>
@@ -561,7 +977,7 @@ function PaginaOrden({ token }) {
           <button onClick={solicitarCambio} disabled={enviando} style={{ flex: 1, padding: "11px", borderRadius: 8, border: "none", background: "#EAF0F6", color: TEAL, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
             {enviando ? "…" : "Solicitar cambios"}
           </button>
-          <button onClick={enviarOrden} disabled={enviando || !coincide} style={{ flex: 1, padding: "11px", borderRadius: 8, border: "none", background: coincide ? NAVY : "#C9C4B6", color: "#fff", fontSize: 13, fontWeight: 700, cursor: coincide ? "pointer" : "not-allowed" }}>
+          <button onClick={enviarOrden} disabled={enviando || !coincide || cambiosSinGuardar} style={{ flex: 1, padding: "11px", borderRadius: 8, border: "none", background: (coincide && !cambiosSinGuardar) ? NAVY : "#C9C4B6", color: "#fff", fontSize: 13, fontWeight: 700, cursor: (coincide && !cambiosSinGuardar) ? "pointer" : "not-allowed" }}>
             {enviando ? "…" : "Enviar orden"}
           </button>
         </div>
@@ -598,6 +1014,10 @@ export default function App() {
   const [portafolioActualImportMensaje, setPortafolioActualImportMensaje] = useState("");
   const [nuevoActivoNombre, setNuevoActivoNombre] = useState("");
   const [nuevoActivoIsin, setNuevoActivoIsin] = useState("");
+  const [nuevoActivoTipo, setNuevoActivoTipo] = useState("accion"); // viene del catálogo si se eligió una sugerencia
+  const [catalogoCantidad, setCatalogoCantidad] = useState(null);
+  const [catalogoMensaje, setCatalogoMensaje] = useState("");
+  const [catalogoImportando, setCatalogoImportando] = useState(false);
   const [comentarios, setComentarios] = useState("");
 
   function columnasConfigInicial() {
@@ -902,7 +1322,7 @@ export default function App() {
         (bundle.categorias_propuesto || []).forEach((cat) => {
           const categoria = CATEGORIA_LABEL_A_VALOR[cat.label] || "Renta Variable";
           (cat.fondos || []).forEach((f) => {
-            nuevosProposed.push({ ...f, categoria, tipo_instrumento: "fondo", ytd: f.ytd || 0, y1: f.y1 || 0, y3: f.y3 || 0, y5: f.y5 || 0 });
+            nuevosProposed.push({ ...f, categoria, tipo_instrumento: f.tipo_instrumento || "fondo", ytd: f.ytd || 0, y1: f.y1 || 0, y3: f.y3 || 0, y5: f.y5 || 0 });
           });
         });
         (bundle.bonos_propuesto || []).forEach((b) => { nuevosProposed.push({ ...b, categoria: "Renta Fija", tipo_instrumento: "bono" }); });
@@ -1089,7 +1509,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (vista === "biblioteca") { cargarAuditoriaLogos(); cargarTodasLasMarcas(); }
+    if (vista === "biblioteca") { cargarAuditoriaLogos(); cargarTodasLasMarcas(); cargarCantidadCatalogo(); }
   }, [vista]);
 
   // --- Lista unificada: cada marca registrada + los grupos de logo que
@@ -1835,11 +2255,42 @@ export default function App() {
 
   async function agregarActivoNuevo() {
     if (!nuevoActivoNombre.trim() || !nuevoActivoIsin.trim()) return;
-    const nuevoFondo = { isin: nuevoActivoIsin.trim(), nombre: nuevoActivoNombre.trim(), uso_frecuente: false, tipo_instrumento: "accion" };
+    const nuevoFondo = { isin: nuevoActivoIsin.trim(), nombre: nuevoActivoNombre.trim(), uso_frecuente: false, tipo_instrumento: nuevoActivoTipo || "accion" };
     await supabase.from("fondos").upsert(nuevoFondo, { onConflict: "isin" });
     addProposedAsset(nuevoFondo);
+    // Además de la biblioteca de fondos, queda en el catálogo de activos
+    // (con todos sus identificadores) para que se autocomplete la próxima vez
+    guardarActivoEnCatalogo({ nombre: nuevoFondo.nombre, ids: [nuevoFondo.isin], tipo: nuevoFondo.tipo_instrumento, origen: "asset" });
     setNuevoActivoNombre("");
     setNuevoActivoIsin("");
+    setNuevoActivoTipo("accion");
+  }
+  function elegirActivoParaAgregar(a) {
+    setNuevoActivoNombre(a.nombre);
+    setNuevoActivoIsin(a.id);
+    setNuevoActivoTipo(["fondo", "fondo_distributivo", "bono"].includes(a.tipo) ? a.tipo : "accion");
+  }
+
+  async function cargarCantidadCatalogo() {
+    const { count, error } = await supabase.from("activos").select("id", { count: "exact", head: true });
+    setCatalogoCantidad(error ? null : (count ?? 0));
+  }
+  async function importarCatalogoDesdeExcel(file) {
+    if (!file) return;
+    setCatalogoImportando(true);
+    setCatalogoMensaje("");
+    try {
+      const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const { registros, error } = registrosDeActivosDesdeWorkbook(wb);
+      if (error) throw new Error(error);
+      const { nuevos, existentes } = await insertarRegistrosEnCatalogo(registros);
+      setCatalogoMensaje(`✓ ${nuevos} activo(s) nuevo(s) guardado(s) · ${existentes} ya estaban en el catálogo.`);
+      cargarCantidadCatalogo();
+    } catch (e) {
+      setCatalogoMensaje("Error: " + (e.message || e));
+    } finally {
+      setCatalogoImportando(false);
+    }
   }
 
   // --- Descripción de activos: búsqueda + selección manual por categoría ---
@@ -2257,6 +2708,7 @@ export default function App() {
         .filter((a) => (normalizarCategoria(a.categoria) || a.categoria) === label && (a.tipo_instrumento === "fondo" || a.tipo_instrumento === "accion" || !a.tipo_instrumento))
         .map((a) => ({
           isin: a.isin, nombre: a.nombre, sector: a.sector || "", ytd: a.ytd || 0, y1: a.y1 || 0, y3: a.y3 || 0, y5: a.y5 || 0, pct: a.pct, monto: a.monto, ter: a.ter || 0,
+          tipo_instrumento: a.tipo_instrumento || "fondo",
           extra: a.extra || {},
         })),
     })).filter((c) => c.fondos.length > 0);
@@ -2761,6 +3213,20 @@ export default function App() {
             )}
           </div>
 
+          <div style={{ borderTop: "1px solid #eae7dc", paddingTop: 26, marginBottom: 30 }}>
+            <h3 style={{ color: NAVY, fontSize: 24, fontWeight: 400, letterSpacing: -0.4, margin: "0 0 8px" }}>Catálogo de activos</h3>
+            <p style={{ fontSize: 12.5, color: "#78776f", marginBottom: 16, maxWidth: 760, lineHeight: 1.6 }}>
+              Todos los activos que usa dealing (acciones, bonos, ETFs, opciones…) con sus identificadores: ISIN, CUSIP, SEDOL y ticker. Se autocompletan al escribir cualquiera de ellos o el nombre, tanto en la página de la orden como al agregar un activo a una propuesta. Cada activo nuevo que se agregue queda guardado solo; acá podés cargar de una vez un Excel con muchos (por ejemplo el Trade Blotter de StoneX).
+            </p>
+            <div style={{ fontSize: 13, color: NAVY, marginBottom: 14 }}>
+              {catalogoCantidad === null ? "Todavía no se pudo leer el catálogo (¿corriste el SQL en Supabase?)." : <><b>{catalogoCantidad.toLocaleString("es-AR")}</b> activos en el catálogo.</>}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
+              <FileInputButton accept=".xlsx,.xls" onChange={(e) => importarCatalogoDesdeExcel(e.target.files[0])} label={catalogoImportando ? "Importando…" : "Importar Excel (Symbol/ID + Security Name)"} />
+            </div>
+            {catalogoMensaje && <div style={{ marginTop: 10, fontSize: 12.5, color: catalogoMensaje.startsWith("Error") ? "#b23b3b" : "#3a7d44" }}>{catalogoMensaje}</div>}
+          </div>
+
           <div style={{ borderTop: "1px solid #eae7dc", paddingTop: 26 }}>
             <h3 style={{ color: NAVY, fontSize: 24, fontWeight: 400, letterSpacing: -0.4, margin: "0 0 8px" }}>Marcas y logos</h3>
             <p style={{ fontSize: 12.5, color: "#78776f", marginBottom: 16 }}>
@@ -2984,7 +3450,7 @@ export default function App() {
                         {prop ? (prop.cliente || `Propuesta #${prop.id}`) : `Propuesta #${s.propuesta_id}`}
                         {s.quien && ` — ${s.quien} pidió un cambio`}
                       </div>
-                      <div style={{ fontSize: 12, color: "#78776f", marginTop: 2 }}>"{s.comentario}"</div>
+                      <div style={{ fontSize: 12, color: "#78776f", marginTop: 2, whiteSpace: "pre-line", lineHeight: 1.55 }}>{s.comentario}</div>
                     </div>
                     {prop && <button onClick={() => abrirParaEditar(prop)} style={{ border: "none", background: "none", color: TEAL, fontSize: 12.5, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>Editar →</button>}
                     <button onClick={() => marcarSolicitudAtendida(s.id)} style={{ border: "none", background: "none", color: "#a5a399", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}>Descartar</button>
@@ -3397,8 +3863,8 @@ export default function App() {
               <div style={{ background: "#fff", border: "1.5px dashed #D5D9E0", borderRadius: 20, padding: 12, marginBottom: 18 }}>
                 <div style={{ fontSize: 12, color: "#78776f", marginBottom: 8 }}>¿No está en la biblioteca? Puede ser cualquier cosa — una acción, un bono, una alternativa. Se agrega acá y queda guardado para la próxima vez.</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8 }}>
-                  <input style={miniInputStyle} placeholder="Nombre (ej: Apple Inc / AAPL)" value={nuevoActivoNombre} onChange={(e) => setNuevoActivoNombre(e.target.value)} />
-                  <input style={miniInputStyle} placeholder="ISIN / Ticker" value={nuevoActivoIsin} onChange={(e) => setNuevoActivoIsin(e.target.value)} />
+                  <InputConSugerencias style={miniInputStyle} placeholder="Nombre (ej: Apple Inc / AAPL) — escribí para buscar" value={nuevoActivoNombre} onChange={setNuevoActivoNombre} onElegir={elegirActivoParaAgregar} />
+                  <InputConSugerencias style={miniInputStyle} mono placeholder="ISIN / Ticker / CUSIP" value={nuevoActivoIsin} onChange={setNuevoActivoIsin} onElegir={elegirActivoParaAgregar} />
                   <button onClick={agregarActivoNuevo} style={{ padding: "0 16px", borderRadius: 6, border: "none", background: NAVY, color: "#fff", fontSize: 12.5, cursor: "pointer" }}>Agregar</button>
                 </div>
               </div>
