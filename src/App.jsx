@@ -309,8 +309,18 @@ function slugify(texto) {
 function PaginaOrden({ token }) {
   const [cargando, setCargando] = useState(true);
   const [propuesta, setPropuesta] = useState(null);
-  const [items, setItems] = useState([]);
-  const [montoTotal, setMontoTotal] = useState(0);
+  // Una o varias estrategias (portafolios propuestos alternativos). items y
+  // montoTotal de más abajo son los de la estrategia que esté elegida —
+  // el resto de la página sigue escrito como si hubiera una sola.
+  const [estrategias, setEstrategias] = useState([]);
+  const [idxEstrategia, setIdxEstrategia] = useState(0);
+  const estrategiaActiva = estrategias[idxEstrategia] || { nombre: "", items: [], montoTotal: 0 };
+  const items = estrategiaActiva.items;
+  const montoTotal = estrategiaActiva.montoTotal;
+  const hayVarias = estrategias.length > 1;
+  const setItems = (fnOValor) => setEstrategias((prev) => prev.map((e, i) => (
+    i === idxEstrategia ? { ...e, items: typeof fnOValor === "function" ? fnOValor(e.items) : fnOValor } : e
+  )));
   const [comentario, setComentario] = useState("");
   const [quien, setQuien] = useState("");
   const [enviando, setEnviando] = useState(false);
@@ -324,17 +334,31 @@ function PaginaOrden({ token }) {
       if (err || !data) { setCargando(false); return; }
       setPropuesta(data);
       const config = data.config || {};
-      const filas = [];
-      (config.categorias_propuesto || []).forEach((cat) => {
-        (cat.fondos || []).forEach((f) => filas.push({ id: f.isin || f.nombre, isin: f.isin || "—", nombre: f.nombre, pct: f.pct || 0, monto: f.monto || 0 }));
+      // Formato nuevo: una lista de portafolios (estrategias). Las
+      // propuestas guardadas antes de eso traen todo suelto a nivel raíz —
+      // se tratan como una sola estrategia.
+      const bundlesCfg = Array.isArray(config.portafolios_propuestos) && config.portafolios_propuestos.length > 0
+        ? config.portafolios_propuestos
+        : [{
+            nombre: "",
+            categorias_propuesto: config.categorias_propuesto,
+            bonos_propuesto: config.bonos_propuesto,
+            fondos_distributivos_propuesto: config.fondos_distributivos_propuesto,
+            cash_monto: config.cash_monto,
+            monto_total: config.monto_total,
+          }];
+      const lista = bundlesCfg.map((b, i) => {
+        const filas = [];
+        const agregar = (f) => filas.push({ id: `${f.isin || f.nombre}#${filas.length}`, isin: f.isin || "—", nombre: f.nombre, pct: f.pct || 0, monto: f.monto || 0 });
+        (b.bonos_propuesto || []).forEach(agregar);
+        (b.categorias_propuesto || []).forEach((cat) => (cat.fondos || []).forEach(agregar));
+        (b.fondos_distributivos_propuesto || []).forEach(agregar);
+        const montoTot = b.monto_total || 0;
+        const cashMonto = b.cash_monto || 0;
+        filas.push({ id: "cash", isin: "—", nombre: "Cash", pct: montoTot ? +((cashMonto / montoTot) * 100).toFixed(1) : 0, monto: cashMonto });
+        return { nombre: b.nombre || `Estrategia ${i + 1}`, items: filas, montoTotal: montoTot };
       });
-      (config.bonos_propuesto || []).forEach((b) => filas.push({ id: b.isin || b.nombre, isin: b.isin || "—", nombre: b.nombre, pct: b.pct || 0, monto: b.monto || 0 }));
-      (config.fondos_distributivos_propuesto || []).forEach((f) => filas.push({ id: f.isin || f.nombre, isin: f.isin || "—", nombre: f.nombre, pct: f.pct || 0, monto: f.monto || 0 }));
-      const montoTot = config.monto_total || 0;
-      const cashMonto = config.cash_monto || 0;
-      filas.push({ id: "cash", isin: "—", nombre: "Cash", pct: montoTot ? +((cashMonto / montoTot) * 100).toFixed(1) : 0, monto: cashMonto });
-      setItems(filas);
-      setMontoTotal(montoTot);
+      setEstrategias(lista);
       setCargando(false);
     })();
   }, [token]);
@@ -360,6 +384,7 @@ function PaginaOrden({ token }) {
     // se sigue viendo aunque no quede perfectamente alineado.
     const filas = items.map((it) => `${it.pct}% | ${it.isin} | ${it.nombre} | ${Math.round(it.monto).toLocaleString("es-AR")}`);
     return [
+      ...(hayVarias ? [`Estrategia: ${estrategiaActiva.nombre}`, ``] : []),
       `%  |  ISIN  |  Nombre  |  Monto (USD)`,
       `--------------------------------------------`,
       ...filas,
@@ -413,7 +438,7 @@ function PaginaOrden({ token }) {
       const { error: err } = await supabase.from("propuestas").update({ status: "confirmada" }).eq("id", propuesta.id);
       if (err) throw err;
       const copiadoConFormato = await copiarTablaAlPortapapeles();
-      const asunto = encodeURIComponent(`Orden de inversión — ${propuesta.cliente || ""} (Propuesta #${propuesta.id})`);
+      const asunto = encodeURIComponent(`Orden de inversión — ${propuesta.cliente || ""} (Propuesta #${propuesta.id}${hayVarias ? ` · ${estrategiaActiva.nombre}` : ""})`);
       const cuerpo = encodeURIComponent(
         copiadoConFormato
           ? "Pegá acá la orden que se copió con formato de tabla (Ctrl+V o Cmd+V):\n\n"
@@ -439,7 +464,7 @@ function PaginaOrden({ token }) {
     setError("");
     try {
       const { error: err } = await supabase.from("solicitudes_cambio").insert({
-        propuesta_id: propuesta.id, comentario: comentario.trim(), quien: quien.trim() || null,
+        propuesta_id: propuesta.id, comentario: (hayVarias ? `[${estrategiaActiva.nombre}] ` : "") + comentario.trim(), quien: quien.trim() || null,
       });
       if (err) throw err;
       setResultado({ tipo: "cambio", mensaje: "Listo — le avisamos al equipo de AIVA con tu pedido. Te van a contactar con la propuesta ajustada." });
@@ -479,6 +504,16 @@ function PaginaOrden({ token }) {
         <div style={{ fontSize: 12, fontWeight: 700, color: TEAL, textTransform: "uppercase", letterSpacing: 0.5 }}>Propuesta #{propuesta.id}</div>
         <h2 style={{ color: NAVY, margin: "2px 0 4px", fontSize: 26, fontWeight: 400, letterSpacing: -0.4 }}>{propuesta.cliente || "Cliente"}</h2>
         <p style={{ color: "#78776f", fontSize: 13, margin: "0 0 10px" }}>Revisá la orden antes de enviarla — podés ajustar % o monto de cualquier fila.</p>
+        {hayVarias && (
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11.5, color: "#8D99AB", marginBottom: 8 }}>Esta propuesta tiene {estrategias.length} estrategias — elegí cuál querés confirmar o ajustar:</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {estrategias.map((e, i) => (
+                <button key={i} onClick={() => setIdxEstrategia(i)} style={{ border: "none", cursor: "pointer", padding: "0 18px", minHeight: 40, borderRadius: 999, fontSize: 12.5, fontWeight: i === idxEstrategia ? 500 : 400, background: i === idxEstrategia ? NAVY : "#F2F0EB", color: i === idxEstrategia ? "#fff" : "#6C7A90" }}>{e.nombre}</button>
+              ))}
+            </div>
+          </div>
+        )}
         <button
           onClick={async () => { const ok = await copiarTablaAlPortapapeles(); setCopiadoManualMsg(ok ? "✓ Copiado — pegalo donde quieras con Ctrl+V" : "No se pudo copiar en este navegador"); }}
           style={{ border: "none", background: "none", color: TEAL, fontSize: 12, cursor: "pointer", padding: 0, marginBottom: 12, textDecoration: "underline" }}
@@ -715,6 +750,7 @@ export default function App() {
   // logo a mano, y ahí es fácil equivocarse de fila).
   const [logosVista, setLogosVista] = useState(false); // ya no se usa (se unificó con la biblioteca), queda por compatibilidad
   const [logosCargando, setLogosCargando] = useState(false);
+  const [logosError, setLogosError] = useState(""); // si la consulta a Supabase falla, se muestra acá en vez de verse una lista vacía
   const [logosGrupos, setLogosGrupos] = useState([]);
   const [logosQuery, setLogosQuery] = useState("");
 
@@ -1032,11 +1068,13 @@ export default function App() {
   // carga para corregir.
   async function cargarAuditoriaLogos() {
     setLogosCargando(true);
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("fondos")
       .select("isin, nombre, logo_url")
       .not("logo_url", "is", null)
       .order("logo_url");
+    if (error) setLogosError(`No se pudo leer la tabla de fondos: ${error.message}`);
+    else setLogosError("");
     const porLogo = new Map();
     (data || []).forEach((f) => {
       if (!porLogo.has(f.logo_url)) porLogo.set(f.logo_url, []);
@@ -1095,7 +1133,8 @@ export default function App() {
   // auditoría ya tienen nombre asignado (y no mostrarles el formulario de
   // "ponerle nombre" de nuevo)
   async function cargarTodasLasMarcas() {
-    const { data } = await supabase.from("marcas_logo").select("id, nombre, logo_url").order("nombre");
+    const { data, error } = await supabase.from("marcas_logo").select("id, nombre, logo_url").order("nombre");
+    if (error) setLogosError((prev) => (prev ? prev + " · " : "") + `No se pudo leer la tabla de marcas: ${error.message}`);
     setMarcasTodas(data || []);
   }
 
@@ -2782,7 +2821,7 @@ export default function App() {
             <input style={{ ...inputStyle, maxWidth: 360, marginBottom: 18 }} value={logosQuery} onChange={(e) => setLogosQuery(e.target.value)} placeholder="Filtrar por ISIN, nombre de fondo o de marca" />
 
             {filasUnificadas.length === 0 ? (
-              <div style={{ fontSize: 13, color: "#78776f" }}>No hay logos cargados{logosQuery ? " que coincidan con ese filtro" : ""}.</div>
+              <div style={{ fontSize: 13, color: logosError ? "#b23b3b" : "#78776f" }}>{logosError || `No hay logos cargados${logosQuery ? " que coincidan con ese filtro" : ""}.`}</div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {filasUnificadas.map((fila) => {
